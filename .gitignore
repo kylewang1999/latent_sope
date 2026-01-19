@@ -1,0 +1,12 @@
+.DS_Store
+.vscode/
+.cursor/
+assets/
+__pycache__/
+.ipynb_checkpoints/
+data/
+scripts/
+logs*/
+*datasets/
+
+*.hdf5
