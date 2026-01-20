@@ -1,6 +1,11 @@
-## Setup Instructions
+## 1. Setup Instructions
 
-### Set up the environment
+
+
+### 1.1 Setup to Develop on [CARC cluster](https://www.carc.usc.edu/user-guides/quick-start-guides/intro-to-carc)
+
+
+### 1.2 Set up the development environment
 
 1\. Remove the existing environment named `latent_sope` (if it exists)
 ```bash
