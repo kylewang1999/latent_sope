@@ -4,6 +4,8 @@
 
 ### 1.1 Setup to Develop on [CARC cluster](https://www.carc.usc.edu/user-guides/quick-start-guides/intro-to-carc)
 
+Follow the instructions in [carc_usage](https://github.com/kylewang1999/carc_usage) to setup the environment on CARC.
+
 
 ### 1.2 Set up the development environment
 

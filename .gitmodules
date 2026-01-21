@@ -1,3 +1,6 @@
 [submodule "third_party/robomimic"]
 	path = third_party/robomimic
 	url = https://github.com/kylewang1999/robomimic.git
+[submodule "third_party/sope"]
+	path = third_party/sope
+	url = https://github.com/kylewang1999/sope.git

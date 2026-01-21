@@ -22,21 +22,97 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+import h5py
+from copy import deepcopy
+
+import numpy as np
+import torch
+import robomimic.utils.file_utils as FileUtils
+import robomimic.utils.obs_utils as ObsUtils
+from robomimic.algo import algo_factory
+from robomimic.algo import RolloutPolicy
+from robomimic.envs.env_base import EnvBase
+from src.latent_sope.utils.common import CONSOLE_LOGGER
+
+
+def print_h5_tree(
+    group: h5py.Group,
+    prefix: str = "",
+    depth: int = 0,
+    max_depth: int = 2,
+    max_children: int = 8,
+) -> None:
+    if depth > max_depth:
+        return
+    keys = sorted(list(group.keys()))
+    for key in keys[:max_children]:
+        item = group[key]
+        if isinstance(item, h5py.Dataset):
+            shape = tuple(item.shape)
+            print(f"{prefix}{key}  [dataset] shape={shape} dtype={item.dtype}")
+        else:
+            print(f"{prefix}{key}/")
+            print_h5_tree(
+                item,
+                prefix=prefix + "  ",
+                depth=depth + 1,
+                max_depth=max_depth,
+                max_children=max_children,
+            )
+    if len(keys) > max_children:
+        print(f"{prefix}... ({len(keys) - max_children} more)")
+
+
+def load_demo(
+    h5: h5py.File, demo_key: str, obs_keys: List[str], num_steps: int
+) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    demo = h5["data"][demo_key]
+    obs_group = demo["obs"]
+    obs = {k: obs_group[k][:num_steps] for k in obs_keys}
+    actions = demo["actions"][:num_steps]
+    return obs, actions
+
+
+def prepare_obs(
+    obs: Dict[str, np.ndarray],
+    device: torch.device,
+    obs_stats: Dict[str, Dict[str, np.ndarray]] | None,
+) -> Dict[str, torch.Tensor]:
+    import robomimic.utils.obs_utils as ObsUtils
+    import robomimic.utils.tensor_utils as TensorUtils
+
+    obs_t = TensorUtils.to_tensor(obs)
+    obs_t = TensorUtils.to_device(obs_t, device)
+    obs_t = TensorUtils.to_float(obs_t)
+
+    if obs_stats is not None:
+        stats_t = TensorUtils.to_float(
+            TensorUtils.to_device(TensorUtils.to_tensor(obs_stats), device)
+        )
+        obs_t = ObsUtils.normalize_dict(obs_t, normalization_stats=stats_t)
+
+    for k in obs_t:
+        if ObsUtils.key_is_obs_modality(
+            key=k, obs_modality="rgb"
+        ) or ObsUtils.key_is_obs_modality(key=k, obs_modality="depth"):
+            obs_t[k] = ObsUtils.process_obs(obs=obs_t[k], obs_key=k)
+    return obs_t
 
 
 @dataclass
 class RobomimicCheckpoint:
     """Container for a robomimic checkpoint plus some convenient metadata."""
 
-    run_dir: Path
-    ckpt_path: Path
-    epoch: int
-    algo_name: Optional[str]
-    config_json: Optional[Dict[str, Any]]
-    ckpt_dict: Dict[str, Any]
+    run_dir: Path  # Root directory of the robomimic experiment (contains config.json, models/, logs/, videos/)
+    ckpt_path: Path  # Full path to the checkpoint file (.pth)
+    epoch: int  # Training epoch number extracted from the checkpoint filename
+    algo_name: Optional[str]  # Algorithm name from the config (e.g., "bc", "diffusion_policy"), or None if unavailable
+    config_json: Optional[Dict[str, Any]]  # Full parsed config.json from the experiment, or None if not found
+    ckpt_dict: Dict[str, Any]  # Loaded checkpoint dictionary from the .pth file (contains model weights and training state)
 
 
 _EPOCH_PATTERNS = [
@@ -58,7 +134,7 @@ def _parse_epoch_from_filename(path: Path) -> int:
     return -1
 
 
-def find_latest_checkpoint(run_dir: Path, models_subdir: str = "models") -> Path:
+def _find_latest_checkpoint(run_dir: Path, models_subdir: str = "models") -> Path:
     """Return the most recent (highest-epoch) checkpoint under run_dir/models.
 
     We primarily look for files named like `model_epoch_XX.pth`, but fall back
@@ -99,7 +175,9 @@ def _load_ckpt_dict_torch(ckpt_path: Path, map_location: str = "cpu") -> Dict[st
 
         obj = torch.load(str(ckpt_path), map_location=map_location)
     except Exception as e:
-        raise RuntimeError(f"Failed to torch.load checkpoint at {ckpt_path}: {e}") from e
+        raise RuntimeError(
+            f"Failed to torch.load checkpoint at {ckpt_path}: {e}"
+        ) from e
 
     if not isinstance(obj, dict):
         raise ValueError(
@@ -131,7 +209,26 @@ def _load_config_json(run_dir: Path) -> Optional[Dict[str, Any]]:
         return json.loads(cfg_path.read_text())
     except Exception:
         # config might be malformed or non-json; keep it optional
+        pass
+    return None
+
+
+def _convert_normalization_stats(
+    stats: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Convert nested lists in normalization stats to numpy arrays."""
+
+    if stats is None:
         return None
+
+    def _convert(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: _convert(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return np.array(obj)
+        return obj
+
+    return _convert(stats)
 
 
 def load_checkpoint(
@@ -150,7 +247,7 @@ def load_checkpoint(
 
     Args:
         run_dir: robomimic run directory (contains config.json, models/)
-        ckpt_path: optional explicit checkpoint path. If None, auto-select.
+        ckpt_path: optional explicit checkpoint path relative to run_dir. If None, auto-select.
         map_location: torch map_location for loading.
 
     Returns:
@@ -159,8 +256,8 @@ def load_checkpoint(
 
     run_dir = Path(run_dir)
     if ckpt_path is None:
-        ckpt_path = find_latest_checkpoint(run_dir)
-    ckpt_path = Path(ckpt_path)
+        ckpt_path = _find_latest_checkpoint(run_dir)
+    ckpt_path = run_dir / ckpt_path
 
     ckpt_dict = _load_ckpt_dict_robomimic(ckpt_path)
     if ckpt_dict is None:
@@ -191,7 +288,7 @@ def build_algo_from_checkpoint(
     - call algo_factory with obs shapes + action dimension
     - deserialize weights
 
-    
+
 
     Returns:
         robomimic Algo instance.
@@ -200,15 +297,6 @@ def build_algo_from_checkpoint(
         ImportError if robomimic is not importable.
         KeyError if the checkpoint is missing required keys.
     """
-
-    try:
-        import robomimic.utils.file_utils as FileUtils  # type: ignore
-        from robomimic.algo import algo_factory  # type: ignore
-    except Exception as e:
-        raise ImportError(
-            "robomimic is required to build an Algo from checkpoint. "
-            "Make sure third_party/robomimic is installed in your environment."
-        ) from e
 
     ckpt_dict = ckpt.ckpt_dict
 
@@ -222,7 +310,10 @@ def build_algo_from_checkpoint(
             "Your robomimic version may be too old."
         )
 
-    config, _ = FileUtils.config_from_checkpoint(algo_name=algo_name, ckpt_dict=ckpt_dict)
+    config, _ = FileUtils.config_from_checkpoint(
+        algo_name=algo_name, ckpt_dict=ckpt_dict
+    )
+    ObsUtils.initialize_obs_utils_with_config(config)
 
     shape_md = ckpt_dict.get("shape_metadata", None)
     if shape_md is None:
@@ -282,9 +373,105 @@ def build_rollout_policy_from_checkpoint(
     try:
         from robomimic.algo.algo import RolloutPolicy  # type: ignore
 
-        return RolloutPolicy(algo)
+        obs_stats = _convert_normalization_stats(
+            ckpt.ckpt_dict.get("obs_normalization_stats", None)
+        )
+        action_stats = _convert_normalization_stats(
+            ckpt.ckpt_dict.get("action_normalization_stats", None)
+        )
+        return RolloutPolicy(
+            algo,
+            obs_normalization_stats=obs_stats,
+            action_normalization_stats=action_stats,
+        )
     except Exception as e:
         raise ImportError(
             "Could not import RolloutPolicy from robomimic. "
             "Your robomimic installation may be incomplete."
         ) from e
+
+
+def build_env_from_checkpoint(
+    ckpt: RobomimicCheckpoint,
+    render: bool = False,
+    render_offscreen: bool = False,
+    verbose: bool = True,
+    env_name: Optional[str] = None,
+) -> Any:
+    """Reconstruct a robomimic environment from a checkpoint."""
+
+    try:
+        import robomimic.utils.file_utils as FileUtils  # type: ignore
+    except Exception as e:
+        raise ImportError(
+            "robomimic is required to build an environment from checkpoint. "
+            "Make sure third_party/robomimic is installed in your environment."
+        ) from e
+
+    env, _ = FileUtils.env_from_checkpoint(
+        ckpt_dict=ckpt.ckpt_dict,
+        env_name=env_name,
+        render=render,
+        render_offscreen=render_offscreen,
+        verbose=verbose,
+    )
+    return env
+
+
+def rollout(
+    policy: RolloutPolicy,
+    env: EnvBase,
+    horizon: int,
+    render: bool = False,
+    video_writer=None,
+    video_skip: int = 5,
+    camera_names: List[str] | None = None,
+) -> Dict[str, float]:
+    assert not (render and (video_writer is not None))
+    camera_names = camera_names or ["agentview"]
+
+    policy.start_episode()
+    obs = env.reset()
+    state_dict = env.get_state()
+    obs = env.reset_to(state_dict)
+
+    total_reward = 0.0
+    success = False
+    video_count = 0
+
+    try:
+        for step_i in range(horizon):
+            act = policy(ob=obs)
+            next_obs, reward, done, _ = env.step(act)
+            total_reward += reward
+            success = env.is_success()["task"]
+
+            if render:
+                env.render(mode="human", camera_name=camera_names[0])
+            if video_writer is not None:
+                if video_count % video_skip == 0:
+                    frames = []
+                    for cam_name in camera_names:
+                        frames.append(
+                            env.render(
+                                mode="rgb_array",
+                                height=512,
+                                width=512,
+                                camera_name=cam_name,
+                            )
+                        )
+                    video_writer.append_data(np.concatenate(frames, axis=1))
+                video_count += 1
+
+            if done or success:
+                break
+
+            obs = deepcopy(next_obs)
+            state_dict = env.get_state()
+            
+    except env.rollout_exceptions as e:
+        print(f"WARNING: got rollout exception {e}")
+
+    return dict(
+        Return=total_reward, Horizon=(step_i + 1), Success_Rate=float(success)
+    )

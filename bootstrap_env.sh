@@ -92,7 +92,7 @@ python -m pip install --upgrade \
   diffrax \
   pandas numpy scipy \
   matplotlib seaborn \
-  tqdm rich ipython ipykernel \
+  tqdm rich ipython ipykernel jupyter ipywidgets \
   h5py pyyaml \
   wandb
 
