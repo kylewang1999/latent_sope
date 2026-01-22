@@ -33,43 +33,42 @@ import numpy as np
 import torch
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.obs_utils as ObsUtils
-from robomimic.algo import algo_factory
-from robomimic.algo import RolloutPolicy
+from robomimic.algo import algo_factory, RolloutPolicy, PolicyAlgo
 from robomimic.envs.env_base import EnvBase
-from src.latent_sope.utils.common import CONSOLE_LOGGER
+from src.latent_sope.utils.common import CONSOLE_LOGGER, timeit
 
 
-def print_h5_tree(
+def build_h5_tree(
     group: h5py.Group,
-    prefix: str = "",
-    depth: int = 0,
     max_depth: int = 2,
     max_children: int = 8,
-) -> None:
-    if depth > max_depth:
-        return
-    keys = sorted(list(group.keys()))
-    for key in keys[:max_children]:
-        item = group[key]
-        if isinstance(item, h5py.Dataset):
-            shape = tuple(item.shape)
-            print(f"{prefix}{key}  [dataset] shape={shape} dtype={item.dtype}")
-        else:
-            print(f"{prefix}{key}/")
-            print_h5_tree(
-                item,
-                prefix=prefix + "  ",
-                depth=depth + 1,
-                max_depth=max_depth,
-                max_children=max_children,
-            )
-    if len(keys) > max_children:
-        print(f"{prefix}... ({len(keys) - max_children} more)")
+) -> Dict[str, Any]:
+    """Return a generic pytree (nested dict) for display via nnx.display."""
+
+    def _build_node(item: h5py.Group, depth: int) -> Dict[str, Any]:
+        if depth >= max_depth:
+            return {}
+        keys = sorted(list(item.keys()))
+        node: Dict[str, Any] = {}
+        for key in keys[:max_children]:
+            child = item[key]
+            if isinstance(child, h5py.Dataset):
+                shape = tuple(child.shape)
+                node[key] = f"[dataset] shape={shape} dtype={child.dtype}"
+            else:
+                node[f"{key}/"] = _build_node(child, depth + 1)
+        if len(keys) > max_children:
+            node[f"... ({len(keys) - max_children} more)"] = None
+        return node
+
+    return {"/": _build_node(group, depth=0)}
 
 
+@timeit
 def load_demo(
     h5: h5py.File, demo_key: str, obs_keys: List[str], num_steps: int
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    """ Extracts observation and action sequences from a robomimic demo. """
     demo = h5["data"][demo_key]
     obs_group = demo["obs"]
     obs = {k: obs_group[k][:num_steps] for k in obs_keys}
@@ -170,14 +169,7 @@ def _find_latest_checkpoint(run_dir: Path, models_subdir: str = "models") -> Pat
 
 
 def _load_ckpt_dict_torch(ckpt_path: Path, map_location: str = "cpu") -> Dict[str, Any]:
-    try:
-        import torch
-
-        obj = torch.load(str(ckpt_path), map_location=map_location)
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to torch.load checkpoint at {ckpt_path}: {e}"
-        ) from e
+    obj = torch.load(str(ckpt_path), map_location=map_location)
 
     if not isinstance(obj, dict):
         raise ValueError(
@@ -189,14 +181,8 @@ def _load_ckpt_dict_torch(ckpt_path: Path, map_location: str = "cpu") -> Dict[st
 def _load_ckpt_dict_robomimic(ckpt_path: Path) -> Optional[Dict[str, Any]]:
     """Load checkpoint using robomimic's helper if available."""
 
-    try:
-        import robomimic.utils.file_utils as FileUtils  # type: ignore
-
-        # maybe_dict_from_checkpoint handles path strings and legacy formats
-        if hasattr(FileUtils, "maybe_dict_from_checkpoint"):
-            return FileUtils.maybe_dict_from_checkpoint(ckpt_path=str(ckpt_path))
-    except Exception:
-        return None
+    if hasattr(FileUtils, "maybe_dict_from_checkpoint"):
+        return FileUtils.maybe_dict_from_checkpoint(ckpt_path=str(ckpt_path))
 
     return None
 
@@ -276,22 +262,23 @@ def load_checkpoint(
     )
 
 
+@timeit
 def build_algo_from_checkpoint(
     ckpt: RobomimicCheckpoint,
     device: str = "cuda",
-) -> Any:
+) -> PolicyAlgo:
     """Reconstruct a robomimic Algo instance from a checkpoint.
 
     This mirrors the logic shown in robomimic's Algo documentation:
+    https://robomimic.github.io/docs/modules/algorithms.html#test-time
     - load ckpt_dict
     - recover algo_name + config
     - call algo_factory with obs shapes + action dimension
     - deserialize weights
 
-
-
     Returns:
-        robomimic Algo instance.
+        robomimic PolicyAlgo instance (subclasses: BC, BC_Gaussian, BC_GMM, BC_VAE, 
+        BC_RNN, BC_RNN_GMM, BC_Transformer, BC_Transformer_GMM, DiffusionPolicyUNet)
 
     Raises:
         ImportError if robomimic is not importable.
@@ -338,11 +325,12 @@ def build_algo_from_checkpoint(
     return model
 
 
+@timeit
 def build_rollout_policy_from_checkpoint(
     ckpt: RobomimicCheckpoint,
     device: str = "cuda",
     verbose: bool = True,
-) -> Any:
+) -> RolloutPolicy:
     """Build a robomimic rollout policy (callable) from checkpoint.
 
     Preferred path: call robomimic's FileUtils.policy_from_checkpoint, which
@@ -352,62 +340,41 @@ def build_rollout_policy_from_checkpoint(
     wrap it with RolloutPolicy.
     """
 
-    try:
-        import robomimic.utils.file_utils as FileUtils  # type: ignore
-
-        if hasattr(FileUtils, "policy_from_checkpoint"):
-            out = FileUtils.policy_from_checkpoint(
-                ckpt_path=str(ckpt.ckpt_path),
-                device=device,
-                verbose=verbose,
-            )
-            # Some versions return (policy, ckpt_dict). Others return just policy.
-            if isinstance(out, tuple) and len(out) >= 1:
-                return out[0]
-            return out
-    except Exception:
-        pass
+    if hasattr(FileUtils, "policy_from_checkpoint"):
+        out = FileUtils.policy_from_checkpoint(
+            ckpt_path=str(ckpt.ckpt_path),
+            device=device,
+            verbose=verbose,
+        )
+        # Some versions return (policy, ckpt_dict). Others return just policy.
+        if isinstance(out, tuple) and len(out) >= 1:
+            return out[0]
+        return out
 
     # Fallback route (no policy_from_checkpoint)
     algo = build_algo_from_checkpoint(ckpt, device=device)
-    try:
-        from robomimic.algo.algo import RolloutPolicy  # type: ignore
-
-        obs_stats = _convert_normalization_stats(
-            ckpt.ckpt_dict.get("obs_normalization_stats", None)
-        )
-        action_stats = _convert_normalization_stats(
-            ckpt.ckpt_dict.get("action_normalization_stats", None)
-        )
-        return RolloutPolicy(
-            algo,
-            obs_normalization_stats=obs_stats,
-            action_normalization_stats=action_stats,
-        )
-    except Exception as e:
-        raise ImportError(
-            "Could not import RolloutPolicy from robomimic. "
-            "Your robomimic installation may be incomplete."
-        ) from e
+    obs_stats = _convert_normalization_stats(
+        ckpt.ckpt_dict.get("obs_normalization_stats", None)
+    )
+    action_stats = _convert_normalization_stats(
+        ckpt.ckpt_dict.get("action_normalization_stats", None)
+    )
+    return RolloutPolicy(
+        algo,
+        obs_normalization_stats=obs_stats,
+        action_normalization_stats=action_stats,
+    )
 
 
+@timeit
 def build_env_from_checkpoint(
     ckpt: RobomimicCheckpoint,
     render: bool = False,
     render_offscreen: bool = False,
     verbose: bool = True,
     env_name: Optional[str] = None,
-) -> Any:
+) -> EnvBase:
     """Reconstruct a robomimic environment from a checkpoint."""
-
-    try:
-        import robomimic.utils.file_utils as FileUtils  # type: ignore
-    except Exception as e:
-        raise ImportError(
-            "robomimic is required to build an environment from checkpoint. "
-            "Make sure third_party/robomimic is installed in your environment."
-        ) from e
-
     env, _ = FileUtils.env_from_checkpoint(
         ckpt_dict=ckpt.ckpt_dict,
         env_name=env_name,
@@ -418,6 +385,7 @@ def build_env_from_checkpoint(
     return env
 
 
+@timeit
 def rollout(
     policy: RolloutPolicy,
     env: EnvBase,
