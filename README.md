@@ -36,7 +36,8 @@ conda create -n latent_sope python=3.10 -y
 conda activate latent_sope
 ```
 
-> [!Caution] This conda environment installs CUDA 12-based wheels. It may not work on some GPUs (e.g., L40S) if the node's NVIDIA driver or CUDA compatibility is not aligned with CUDA 12. The easiest way to fix this by relinquishing the current compute node and requesting a new one with a different GPU (v100/a100/a40).
+> [!CAUTION]
+> This conda environment installs CUDA 12-based wheels. It may not work on some GPUs (e.g., L40S) if the node's NVIDIA driver or CUDA compatibility is not aligned with CUDA 12. The easiest way to fix this by relinquishing the current compute node and requesting a new one with a different GPU (v100/a100/a40).
 
 3\. Run [bootstrap_env.sh](bootstrap_env.sh) first to install packages into the new env.
 
