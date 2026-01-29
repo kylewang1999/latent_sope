@@ -33,7 +33,7 @@ class RolloutStats:
 
 @dataclass
 class RolloutLatentTrajectory:
-    z: np.ndarray
+    latents: np.ndarray
     actions: np.ndarray
     rewards: np.ndarray
     dones: np.ndarray
@@ -278,7 +278,7 @@ class RolloutLatentRecorder:
         dones = np.asarray(self._dones, dtype=np.bool_)
 
         return RolloutLatentTrajectory(
-            z=z,
+            latents=z,
             actions=actions,
             rewards=rewards,
             dones=dones,
@@ -332,7 +332,7 @@ def save_rollout_latents(path: Path, traj: RolloutLatentTrajectory) -> Path:
     if path.suffix == ".npz":
         np.savez_compressed(
             path,
-            z=traj.z,
+            latents=traj.latents,
             actions=traj.actions,
             rewards=traj.rewards,
             dones=traj.dones,
@@ -344,11 +344,11 @@ def save_rollout_latents(path: Path, traj: RolloutLatentTrajectory) -> Path:
         return path
 
     with h5py.File(path, "w") as f:
-        f.create_dataset("z", data=traj.z, compression="gzip")
+        f.create_dataset("latents", data=traj.latents, compression="gzip")
         f.create_dataset("actions", data=traj.actions, compression="gzip")
         f.create_dataset("rewards", data=traj.rewards, compression="gzip")
         f.create_dataset("dones", data=traj.dones, compression="gzip")
-        f.create_dataset("t", data=np.arange(traj.z.shape[0], dtype=np.int64))
+        f.create_dataset("t", data=np.arange(traj.latents.shape[0], dtype=np.int64))
 
         f.attrs["success"] = int(traj.success)
         f.attrs["total_reward"] = float(traj.total_reward)
@@ -371,7 +371,7 @@ def save_rollout_latents(path: Path, traj: RolloutLatentTrajectory) -> Path:
 def load_rollout_latents(path: Path) -> Dict[str, Any]:
     """Load rollout latents saved by save_rollout_latents.
 
-    Returns a dict with keys: z, actions, rewards, dones, obs (optional), next_obs (optional).
+    Returns a dict with keys: latents, actions, rewards, dones, obs (optional), next_obs (optional).
     """
     path = Path(path)
     assert path.is_file(), f"rollout file not found: {path}"
@@ -380,7 +380,7 @@ def load_rollout_latents(path: Path) -> Dict[str, Any]:
     if path.suffix == ".npz":
         data = np.load(path, allow_pickle=True)
         return {
-            "z": np.asarray(data["z"], dtype=np.float32),
+            "latents": np.asarray(data["latents"], dtype=np.float32),
             "actions": np.asarray(data["actions"], dtype=np.float32),
             "rewards": np.asarray(data["rewards"], dtype=np.float32),
             "dones": np.asarray(data["dones"], dtype=np.bool_),
@@ -391,7 +391,7 @@ def load_rollout_latents(path: Path) -> Dict[str, Any]:
 
     else:
         with h5py.File(path, "r") as f:
-            z = np.asarray(f["z"], dtype=np.float32)
+            latents = np.asarray(f["latents"], dtype=np.float32)
             actions = np.asarray(f["actions"], dtype=np.float32)
             rewards = np.asarray(f["rewards"], dtype=np.float32)
             dones = np.asarray(f["dones"], dtype=np.bool_)
@@ -406,7 +406,7 @@ def load_rollout_latents(path: Path) -> Dict[str, Any]:
                 next_obs = {k: np.asarray(v) for k, v in f["next_obs"].items()}
 
         return {
-            "z": z,
+            "latents": latents,
             "actions": actions,
             "rewards": rewards,
             "dones": dones,
@@ -495,7 +495,7 @@ def make_rollout_chunk_dataloader(
     stride: int = 1,
     batch_size: int = 64,
     frame_stack: int = 1,
-    source: str = "z",
+    source: str = "latents",
     encoder: Optional[Any] = None,
     obs_keys: Optional[Sequence[str]] = None,
     include_actions: bool = True,
@@ -514,8 +514,8 @@ def make_rollout_chunk_dataloader(
 
     for p in rollout_paths:
         data = load_rollout_latents(p)
-        if source == "z":
-            z = data["z"]
+        if source == "latents":
+            z = data["latents"]
         elif source == "obs":
             if data["obs"] is None:
                 raise ValueError(f"rollout {p} has no obs; save with store_obs=True")
@@ -526,7 +526,7 @@ def make_rollout_chunk_dataloader(
                 obs = {k: obs[k] for k in obs_keys}
             z = extract_embeddings_batched(encoder, obs, device=encoder_device)
         else:
-            raise ValueError(f"Unknown source={source}. Use 'z' or 'obs'.")
+            raise ValueError(f"Unknown source={source}. Use 'latents' or 'obs'.")
 
         z = _stack_frames(z, frame_stack)
         actions = data["actions"]
