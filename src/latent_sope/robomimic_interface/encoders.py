@@ -21,12 +21,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
+import torch
 
 
 @dataclass(frozen=True)
 class EncoderOutput:
     """Output from encoding a batch of observations."""
-
     z: np.ndarray  # (B, Dz)
 
 
@@ -36,22 +36,6 @@ def _flatten_time_major(x: np.ndarray) -> np.ndarray:
     if x.ndim == 1:
         x = x[:, None]
     return x.reshape(x.shape[0], -1)
-
-
-class LowDimConcatEncoder:
-    """Simple encoder that concatenates selected obs keys.
-
-    Useful for bootstrapping the whole pipeline on low_dim datasets.
-    """
-
-    def __init__(self, obs_keys: Optional[Sequence[str]] = None):
-        self.obs_keys = None if obs_keys is None else list(obs_keys)
-
-    def __call__(self, obs_dict: Dict[str, np.ndarray]) -> EncoderOutput:
-        keys = self.obs_keys or list(obs_dict.keys())
-        parts = [_flatten_time_major(obs_dict[k]).astype(np.float32, copy=False) for k in keys]
-        z = np.concatenate(parts, axis=-1)
-        return EncoderOutput(z=z)
 
 
 def resolve_module(root: Any, dotted_path: str) -> Any:
@@ -83,7 +67,95 @@ def resolve_module(root: Any, dotted_path: str) -> Any:
     return cur
 
 
-class RobomimicObsEncoder:
+class LowDimConcatEncoder:
+    """Simple encoder that concatenates low-dim obs attributes
+    specified by obs_keys."""
+
+    def __init__(self, obs_keys: Optional[Sequence[str]] = None):
+        self.obs_keys = None if obs_keys is None else list(obs_keys)
+        self.obs_shapes: Optional[Dict[str, Tuple[int, ...]]] = None
+        self.obs_dims: Optional[Dict[str, int]] = None
+
+    def __call__(self, obs_dict: Dict[str, np.ndarray]) -> EncoderOutput:
+        keys = self.obs_keys or list(obs_dict.keys())
+        self.obs_keys = list(keys)
+
+        if self.obs_shapes is None or self.obs_dims is None:
+            self.obs_shapes = {}
+            self.obs_dims = {}
+            for k in self.obs_keys:
+                arr = np.asarray(obs_dict[k])
+                if arr.ndim == 1: # assume (T,)
+                    shape = (1,)
+                else: # assume (T, ...)
+                    shape = tuple(arr.shape[1:])
+                dim = int(np.prod(shape))
+                self.obs_shapes[k] = shape
+                self.obs_dims[k] = dim
+
+        parts = [_flatten_time_major(obs_dict[k]).astype(np.float32, copy=False) for k in self.obs_keys]
+        z = np.concatenate(parts, axis=-1)
+        return EncoderOutput(z=z)
+    
+    def decode_to_obs_dict(self, z: np.ndarray) -> Dict[str, np.ndarray]:
+        """Reconstruct an obs dict from a concatenated latent.
+
+        Requires either:
+        - self.obs_shapes: dict mapping key -> shape (excluding time dim), or
+        - self.obs_dims: dict mapping key -> flattened dim
+        """
+        if isinstance(z, dict):
+            return {k: np.asarray(v) for k, v in z.items()}
+
+        z = np.asarray(z)
+        if z.ndim == 1:
+            z = z[None, :]
+        if z.ndim != 2:
+            raise ValueError(f"Expected z with shape (T, D) or (D,), got {z.shape}")
+
+        obs_shapes = getattr(self, "obs_shapes", None)
+        obs_dims = getattr(self, "obs_dims", None)
+
+        if obs_shapes is None and obs_dims is None:
+            raise ValueError(
+                "decode_to_obs_dict requires encoder.obs_shapes or encoder.obs_dims to be set "
+                "(dict mapping obs key -> shape or flattened dim)."
+            )
+
+        if obs_shapes is not None:
+            keys = self.obs_keys or list(obs_shapes.keys())
+        else:
+            keys = self.obs_keys or list(obs_dims.keys())
+
+        obs: Dict[str, np.ndarray] = {}
+        cursor = 0
+        D = int(z.shape[1])
+
+        for k in keys:
+            if obs_shapes is not None:
+                shape = tuple(obs_shapes[k])
+                dim = int(np.prod(shape))
+            else:
+                shape = None
+                dim = int(obs_dims[k])
+
+            if cursor + dim > D:
+                raise ValueError(f"Not enough dims in z to decode key={k}: need {dim}, have {D - cursor}")
+
+            chunk = z[:, cursor : cursor + dim]
+            if shape is not None:
+                obs[k] = chunk.reshape((z.shape[0],) + shape)
+            else:
+                obs[k] = chunk
+            cursor += dim
+
+        if cursor != D:
+            raise ValueError(f"Unused dims in z: expected {cursor}, got {D}")
+
+        return obs
+
+
+class HighDimObsEncoder:
     """Feature extractor that uses a forward hook on a module inside a policy.
 
     Usage pattern:
@@ -125,7 +197,6 @@ class RobomimicObsEncoder:
 
     def _register_hook(self) -> None:
         try:
-            import torch
 
             mod = resolve_module(self.policy, self.feature_module_path)
             if not hasattr(mod, "register_forward_hook"):

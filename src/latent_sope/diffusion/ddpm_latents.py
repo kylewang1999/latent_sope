@@ -15,9 +15,11 @@ Expected data shape convention:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
+import torch.nn as nn
 
 
 @dataclass(frozen=True)
@@ -46,12 +48,27 @@ def _require_torch():
         raise ImportError("PyTorch is required for DDPM modules") from e
 
 
+def _require_sope():
+    """Ensure opelab (SOPE) is importable and return needed classes."""
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[3]
+    sope_root = repo_root / "third_party" / "sope"
+    if str(sope_root) not in sys.path:
+        sys.path.append(str(sope_root))
+
+    from opelab.core.baselines.diffusion.temporal import TemporalUnet  # type: ignore
+    from opelab.core.baselines.diffusion.diffusion import GaussianDiffusion  # type: ignore
+
+    return TemporalUnet, GaussianDiffusion
+
+
 class ChunkDenoiser:
     """A denoiser epsilon_theta(x_t, t) for (B, C, W) chunk tensors."""
 
     def __init__(self, cfg: DDPMConfig):
         torch = _require_torch()
-        import torch.nn as nn
+        
 
         self.cfg = cfg
         self._torch = torch
@@ -287,3 +304,165 @@ def reconstruct_from_noised(
     if single:
         return x_hat[0]
     return x_hat
+
+
+@dataclass(frozen=True)
+class SopeChunkDiffusionConfig:
+    """Configuration for SOPE-style trajectory chunk diffusion."""
+
+    horizon: int
+    obs_dim: int
+    action_dim: int
+    diffusion_steps: int = 256
+
+    # TemporalUnet backbone
+    dim_mults: Tuple[int, ...] = (1, 2, 4, 8)
+    attention: bool = False
+
+    # diffusion loss
+    loss_type: str = "l2"
+    action_weight: float = 5.0
+    loss_discount: float = 1.0
+    predict_epsilon: bool = True
+
+    # optimization
+    lr: float = 3e-4
+    weight_decay: float = 0.0
+
+    # guidance (optional)
+    guided: bool = False
+    guidance_hyperparams: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class NormalizationStats:
+    mean: np.ndarray  # (D,)
+    std: np.ndarray  # (D,)
+
+
+def compute_chunk_stats(x: np.ndarray) -> NormalizationStats:
+    """Compute feature-wise mean/std over (N, W, D) data."""
+    if x.ndim != 3:
+        raise ValueError(f"Expected (N, W, D), got {x.shape}")
+    mean = x.mean(axis=(0, 1)).astype(np.float32)
+    std = (x.std(axis=(0, 1)) + 1e-6).astype(np.float32)
+    return NormalizationStats(mean=mean, std=std)
+
+
+def _make_normalizer(stats: Optional[NormalizationStats]) -> Tuple[Callable, Callable]:
+    if stats is None:
+        return (lambda x: x), (lambda x: x)
+
+    mean = stats.mean
+    std = stats.std
+
+    def _norm(x):
+        import torch
+
+        if torch.is_tensor(x):
+            mean_t = torch.as_tensor(mean, device=x.device, dtype=x.dtype)
+            std_t = torch.as_tensor(std, device=x.device, dtype=x.dtype)
+            return (x - mean_t) / std_t
+        return (x - mean) / std
+
+    def _unnorm(x):
+        import torch
+
+        if torch.is_tensor(x):
+            mean_t = torch.as_tensor(mean, device=x.device, dtype=x.dtype)
+            std_t = torch.as_tensor(std, device=x.device, dtype=x.dtype)
+            return x * std_t + mean_t
+        return x * std + mean
+
+    return _norm, _unnorm
+
+
+class SopeChunkDiffusion:
+    """SOPE trajectory-chunk diffusion wrapper (TemporalUnet + GaussianDiffusion).
+
+    This is intended for chunk diffusion over (z, a) sequences, where z can be
+    low-dim concatenated obs or high-dim image embeddings.
+    """
+
+    def __init__(
+        self,
+        cfg: SopeChunkDiffusionConfig,
+        normalization_stats: Optional[NormalizationStats] = None,
+        device: str = "cuda",
+        policy: Optional[Any] = None,
+        behavior_policy: Optional[Any] = None,
+    ):
+        torch = _require_torch()
+        TemporalUnet, GaussianDiffusion = _require_sope()
+
+        self.cfg = cfg
+        self.device = torch.device(device)
+        self.obs_dim = int(cfg.obs_dim)
+        self.action_dim = int(cfg.action_dim)
+        self.transition_dim = self.obs_dim + self.action_dim
+
+        self.normalizer, self.unnormalizer = _make_normalizer(normalization_stats)
+
+        self.model = TemporalUnet(
+            horizon=cfg.horizon,
+            transition_dim=self.transition_dim,
+            attention=cfg.attention,
+            dim_mults=cfg.dim_mults,
+        ).to(self.device)
+
+        self.diffusion = GaussianDiffusion(
+            model=self.model,
+            horizon=cfg.horizon,
+            observation_dim=self.obs_dim,
+            action_dim=self.action_dim,
+            n_timesteps=cfg.diffusion_steps,
+            normalizer=self.normalizer,
+            unnormalizer=self.unnormalizer,
+            action_weight=cfg.action_weight,
+            loss_discount=cfg.loss_discount,
+            loss_type=cfg.loss_type,
+            predict_epsilon=cfg.predict_epsilon,
+        ).to(self.device)
+
+        if policy is not None:
+            self.set_policy(policy, behavior_policy)
+
+    def set_policy(self, policy: Any, behavior_policy: Optional[Any] = None) -> None:
+        """Attach policy objects for guidance (if supported by SOPE guidance code)."""
+        self.diffusion.policy = policy
+        self.diffusion.behavior_policy = behavior_policy
+
+    def make_optimizer(self):
+        torch = _require_torch()
+        return torch.optim.Adam(
+            self.diffusion.parameters(),
+            lr=self.cfg.lr,
+            weight_decay=self.cfg.weight_decay,
+        )
+
+    def make_cond(self, batch: "np.ndarray | Any", cond_on_first: bool = True):
+        """Create SOPE-style conditioning dict from a batch (B, W, D)."""
+        torch = _require_torch()
+        if not torch.is_tensor(batch):
+            batch = torch.as_tensor(batch, device=self.device, dtype=torch.float32)
+        if not cond_on_first:
+            return None
+        cond = batch[:, 0, : self.obs_dim]
+        return {0: cond}
+
+    def loss(self, batch, cond=None):
+        torch = _require_torch()
+        if not torch.is_tensor(batch):
+            batch = torch.as_tensor(batch, device=self.device, dtype=torch.float32)
+        return self.diffusion.loss(batch, cond)
+
+    def sample(self, num_samples: int, cond=None, return_chain: bool = False, **kwargs):
+        """Sample chunks from the diffusion model."""
+        shape = (num_samples, self.cfg.horizon, self.transition_dim)
+        return self.diffusion.conditional_sample(
+            shape,
+            cond,
+            guided=self.cfg.guided,
+            return_chain=return_chain,
+            **kwargs,
+        )
