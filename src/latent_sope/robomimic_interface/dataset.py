@@ -30,17 +30,13 @@ def compute_normalization_stats(x: np.ndarray) -> NormalizationStats:
     return NormalizationStats(mean=mean, std=std)
 
 
-def _collect_frame_stack(z: np.ndarray, t0: int, frame_stack: int) -> np.ndarray:
-    """Collect past frames ending at t0, padding with earliest frame when needed."""
-    z = np.asarray(z)
-    if z.ndim != 2:
-        raise ValueError(f"Expected z with shape (T, D), got {z.shape}")
+def _collect_frame_stack(latents: np.ndarray, t0: int, frame_stack: int) -> np.ndarray:
+    """Collect past frames ending at t0, padding by duplicating earliest frame when needed."""
+    assert latents.ndim == 2, f"Expected latents with shape (T, D), got {latents.shape}"
     frames = []
     for i in range(frame_stack):
-        t_i = t0 - (frame_stack - 1 - i)
-        if t_i < 0:
-            t_i = 0
-        frames.append(z[t_i])
+        t_i = max(0, t0 - (frame_stack - 1 - i))
+        frames.append(latents[t_i])
     return np.stack(frames, axis=0)
 
 
@@ -60,9 +56,8 @@ class RolloutChunkDatasetConfig:
     stride: int = 8
     frame_stack: int = 2
     source: str = "latents"
-    include_actions: bool = True
     normalize: bool = False
-    return_meta: bool = False
+    return_meta: bool = True
 
 
 class RolloutChunkDataset:
@@ -84,49 +79,16 @@ class RolloutChunkDataset:
         self.obs_keys: Optional[Sequence[str]] = obs_keys
         self.encoder_device: str = encoder_device
         self.demo_id: Optional[str] = demo_id
+        self._validate_config()
 
-        if config.source == "latents":
-            assert traj.latents is not None, "rollout has no latents; save with encoder/feature hook enabled"
-            z = traj.latents
-            if z.ndim == 3:
-                z = z[:, 0, :]
-        elif config.source == "obs":
-            if traj.obs is None:
-                raise ValueError("rollout has no obs; save with store_obs=True")
-            if encoder is None:
-                raise ValueError("encoder must be provided when source='obs'")
-            obs = traj.obs
-            if obs_keys is not None:
-                obs = {k: obs[k] for k in obs_keys}
-            z = extract_embeddings_batched(encoder, obs, device=encoder_device)
-        else:
-            raise ValueError(f"Unknown source={config.source}. Use 'latents' or 'obs'.")
+        self.latents = self._preprocess_latents()
+        self.actions = np.asarray(self.traj.actions, dtype=np.float32)
 
-        actions = traj.actions
-
-        if not config.include_actions:
-            actions = np.zeros((actions.shape[0], 0), dtype=np.float32)
-
-        z = np.asarray(z, dtype=np.float32)
-        actions = np.asarray(actions, dtype=np.float32)
-        if z.ndim != 2:
-            raise ValueError(f"Expected z to have shape (T, Dz), got {z.shape}")
-        if actions.ndim != 2:
-            raise ValueError(
-                f"Expected actions to have shape (T, Da), got {actions.shape}"
-            )
-        if z.shape[0] != actions.shape[0]:
-            raise ValueError(
-                f"time length mismatch: z has {z.shape[0]}, actions has {actions.shape[0]}"
-            )
-
-        T = z.shape[0]
+        T = self.latents.shape[0]
         W = int(config.chunk_size)
+        S = int(config.frame_stack)
         last_start = T - (W + 1)
-        if last_start < 0:
-            raise RuntimeError(
-                "No chunks produced. Check chunk_size/stride and rollout length."
-            )
+        assert last_start >= 0, "No chunks produced. Check chunk_size/stride and rollout length."
 
         states_from_list: List[np.ndarray] = []
         states_to_list: List[np.ndarray] = []
@@ -134,29 +96,55 @@ class RolloutChunkDataset:
         t0_list: List[int] = []
         for t0 in range(0, last_start + 1, config.stride):
             # SOPE trajectory chunks: (s_t, a_t, s_{t+1}, ..., s_{t+W}) and actions (a_t..a_{t+W-1}).
-            states_to_list.append(z[t0 : t0 + W + 1])
-            actions_to_list.append(actions[t0 : t0 + W])
-            states_from_list.append(_collect_frame_stack(z, t0, config.frame_stack))
+            states_to_list.append(self.latents[t0 : t0 + W + 1])
+            actions_to_list.append(self.actions[t0 : t0 + W])
+            states_from_list.append(_collect_frame_stack(self.latents, t0, S))
             t0_list.append(int(t0))
 
         self.states_from = np.stack(states_from_list, axis=0).astype(np.float32)
         self.states_to = np.stack(states_to_list, axis=0).astype(np.float32)
         self.actions_to = np.stack(actions_to_list, axis=0).astype(np.float32)
         self.t0 = np.asarray(t0_list, dtype=np.int64)
+        self._validate_data_shapes()
 
+        self.latents_dim = int(self.latents.shape[-1])
+        self.action_dim = int(self.actions.shape[-1])
+        self.normalize = bool(config.normalize)
+        self.return_meta = bool(config.return_meta)
+        self._stats = self._compute_transition_stats() if self.normalize else None
+
+    def _validate_config(self) -> None:
+        if self.config.source == "latents":
+            assert self.traj.latents is not None, "rollout has no latents; save with encoder/feature hook enabled"
+        elif self.config.source == "obs":
+            assert (self.traj.obs is not None), "rollout has no obs; need to save with store_obs=True"
+            assert self.encoder is not None, "encoder must be provided when source='obs'"
+
+        else:
+            raise ValueError(f"Unknown source={self.config.source}. Use 'latents' or 'obs'.")
+
+    def _validate_data_shapes(self) -> None:
         N = int(self.states_to.shape[0])
-        S = int(config.frame_stack)
-        Dz = int(z.shape[-1])
-        Da = int(actions.shape[-1])
+        W = int(self.config.chunk_size)
+        S = int(self.config.frame_stack)
+        Dz = int(self.traj.latents.shape[-1])
+        Da = int(self.traj.actions.shape[-1])
         assert self.states_from.shape == (N, S, Dz), f"Expected states_from to have shape (N, S, Dz), got {self.states_from.shape}"
         assert self.states_to.shape == (N, W + 1, Dz), f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
         assert self.actions_to.shape == (N, W, Da), f"Expected actions_to to have shape (N, W, Da), got {self.actions_to.shape}"
 
-        self.latents_dim = Dz
-        self.action_dim = Da
-        self.normalize = bool(config.normalize)
-        self.return_meta = bool(config.return_meta)
-        self._stats = self._compute_transition_stats() if self.normalize else None
+    def _preprocess_latents(self) -> np.ndarray:
+        if self.config.source == "latents":
+            z = np.asarray(self.traj.latents)
+            if z.ndim == 3:
+                return z[:, 0, :]
+            return z
+
+        # source == "obs"
+        obs = self.traj.obs
+        if self.obs_keys is not None:
+            obs = {k: obs[k] for k in self.obs_keys}
+        return extract_embeddings_batched(self.encoder, obs, device=self.encoder_device)
 
     def _compute_transition_stats(self) -> NormalizationStats:
         x = np.concatenate([self.states_to[:, :-1, :], self.actions_to], axis=-1)
