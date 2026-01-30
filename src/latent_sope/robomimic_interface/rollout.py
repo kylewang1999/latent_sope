@@ -6,23 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from copy import deepcopy
-
+from collections import OrderedDict
 import h5py
+
 import torch
 import numpy as np
-from torch.utils.data import DataLoader
 from robomimic.algo import RolloutPolicy, PolicyAlgo
 from robomimic.utils import tensor_utils as TensorUtils
 from robomimic.envs.env_base import EnvBase
 
-from src.latent_sope.robomimic_interface.encoders import (
-    resolve_module,
-    LowDimConcatEncoder,
-    HighDimObsEncoder,
-    extract_embeddings_batched,
-)
-from src.latent_sope.data.chunking import make_chunks, pack_chunk_x
-from src.latent_sope.data.chunk_dataset import compute_normalization_stats, NormalizationStats
+from src.latent_sope.robomimic_interface.encoders import resolve_module
 from src.latent_sope.utils.common import timeit
 
 @dataclass
@@ -48,7 +41,10 @@ class RolloutLatentTrajectory:
 
 
 class PolicyFeatureHook:
-    """Capture features from a policy module via a forward hook."""
+    """Attach a forward hook to a policy module and cache the latest features.
+    Warning: This is only tested with the `low_dim_concat` regime.
+    - Docs on PyTorch nn module forward_hook: https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html
+    """
 
     def __init__(
         self,
@@ -59,7 +55,7 @@ class PolicyFeatureHook:
         assert feat_type in {"low_dim_concat", "high_dim_encode"}, f"Unknown feat_type: {feat_type}"
         self.policy = policy
         self.frame_stack = get_policy_frame_stack(policy)
-        self.obs_keys = (
+        self.obs_keys = sorted(
             list(_get_nested_attr(policy, "policy.obs_config.modalities.obs.low_dim"))
             if obs_keys is None
             else list(obs_keys)
@@ -75,7 +71,7 @@ class PolicyFeatureHook:
             else:
                 feat = out
             self._last_feature = feat
-        
+
         self._last_feature = None
         self._policy_module = self._resolve_policy_module()
         self._hook_handle = self._policy_module.register_forward_hook(_hook)
@@ -101,13 +97,10 @@ class PolicyFeatureHook:
             "Could not resolve a torch policy module for low_dim_concat. "
             "Pass a policy with nets['policy'] or a policy module that supports hooks."
         )
-    
-    def clear(self) -> None:
-        self._last_feature = None
 
     def _get_policy_algo(self) -> PolicyAlgo:
         return getattr(self.policy, "policy", self.policy)
-    
+
     def _get_obs_shapes(self) -> Dict[str, Any]:
         algo = self._get_policy_algo()
         obs_shapes = getattr(algo, "obs_shapes", None)
@@ -115,31 +108,50 @@ class PolicyFeatureHook:
             return obs_shapes
         raise RuntimeError("Policy does not expose obs_shapes needed to encode observations.")
 
-    def _prepare_obs_inputs(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        prep: RolloutPolicy = self.policy if hasattr(self.policy, "_prepare_observation") else getattr(self.policy, "policy", None)
-        assert prep is not None and hasattr(prep, "_prepare_observation"), "Policy does not expose _prepare_observation needed to encode observations."
+    def update_latent_from_obs(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
+        """Invoke the hook with policy-formatted inputs to refresh cached features.
 
-        obs_t = prep._prepare_observation(obs, batched_ob=False)
-        inputs = {"obs": obs_t}
-        if goal is not None:
-            inputs["goal"] = prep._prepare_observation(goal, batched_ob=False)
+        This is needed because the policy's action buffer and horizon settings can result in
+        the policy's forward pass (which invokes the registered forward hook) to run every 
+        `action_horizon` (configured through robomimic's config by `algo.horizon.action_horizon`)
+        and therefore skipping the hook update. As a remedy we force the hook update here
+        through @update_latent_from_obs by running the policy's pass forcefully using 
+        @TensorUtils.time_distributed
+        """
+        
+        def _prepare_obs_inputs(obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            prep: RolloutPolicy = self.policy if hasattr(self.policy, "_prepare_observation") else getattr(self.policy, "policy", None)
+            assert prep is not None and hasattr(prep, "_prepare_observation"), "Policy does not expose _prepare_observation needed to encode observations."
 
-        obs_shapes = self._get_obs_shapes()
-        if obs_shapes is not None:
-            for k in obs_shapes:
-                if inputs["obs"][k].ndim - 1 == len(obs_shapes[k]):
-                    inputs["obs"][k] = inputs["obs"][k].unsqueeze(1)
-        return inputs
+            # Robomimic policies maintain an internal action buffer and expect observations shaped
+            # to match the configured horizon settings (e.g., observation_horizon=2, action_horizon=8,
+            # prediction_horizon=16 for diffusion policies). We mirror that preparation here so the
+            # hook sees inputs in the exact same format the policy forward uses.
+            obs_t = prep._prepare_observation(obs, batched_ob=False)
+            inputs = {"obs": obs_t}
+            if goal is not None:
+                inputs["goal"] = prep._prepare_observation(goal, batched_ob=False)
 
-    def update_from_obs(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
+            obs_shapes = self._get_obs_shapes()
+            if obs_shapes is not None:
+                for k in obs_shapes:
+                    if inputs["obs"][k].ndim - 1 == len(obs_shapes[k]):
+                        inputs["obs"][k] = inputs["obs"][k].unsqueeze(1)
+            return inputs
+        
         if self.feat_type != "low_dim_concat":
+            # Warning: might actually need to implement the corresponding logic for
+            # the high_dim_encode feat_type as well - need to find out
             return
-        inputs = self._prepare_obs_inputs(obs, goal=goal)
+        inputs = _prepare_obs_inputs(obs, goal=goal)
         _ = TensorUtils.time_distributed(inputs, self._policy_module, inputs_as_kwargs=True)
 
     def ensure_feature(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
         if self._last_feature is None:
-            self.update_from_obs(obs, goal=goal)
+            self.update_latent_from_obs(obs, goal=goal)
+
+    def clear(self) -> None:
+        self._last_feature = None
 
     def close(self) -> None:
         if self._hook_handle is not None:
@@ -150,8 +162,7 @@ class PolicyFeatureHook:
             finally:
                 self._hook_handle = None
 
-    def __del__(self):
-        self.close()
+    def __del__(self): self.close()
 
     def pull_feat(self, clear: bool = True) -> np.ndarray:
         """Return last captured feature as a float32 numpy array."""
@@ -169,28 +180,36 @@ class PolicyFeatureHook:
 
 
 class RolloutLatentRecorder:
-    """Record a rollout trajectory and optional latent embeddings."""
+    """Record rollout trajectories and optional latent embeddings for offline storage.
+
+    Use this during policy rollout/evaluation. The works flow is:
+    1. call start_episode() with the initial obs,
+    2. call step() each environment step, and then
+    3. call finalize_episode() to get a RolloutLatentTrajectory (and optional stats) that can be saved
+    """
 
     def __init__(
         self,
+        feature_hook: PolicyFeatureHook,
         obs_keys: Optional[Sequence[str]] = None,
         store_obs: bool = True,
         store_next_obs: bool = False,
         encoder: Optional[Any] = None,
         encoder_device: str = "cuda",
-        feature_hook: Optional[PolicyFeatureHook] = None,
         frame_stack: Optional[int] = None,
     ):
-        self.obs_keys = None if obs_keys is None else list(obs_keys)
+        self.feature_hook = feature_hook
+        self.obs_keys = None if obs_keys is None else sorted(obs_keys)
         self.store_obs = bool(store_obs)
         self.store_next_obs = bool(store_next_obs)
         self.encoder = encoder
         self.encoder_device = encoder_device
-        self.feature_hook = feature_hook
-        self.frame_stack = 1 if frame_stack is None else int(frame_stack)
-        
-        self._obs: Dict[str, List[np.ndarray]] = {}
-        self._next_obs: Dict[str, List[np.ndarray]] = {}
+        self.frame_stack = self.feature_hook.frame_stack
+        self.obs_keys = sorted(self.feature_hook.obs_keys)
+
+        # containers to hold rollout data over T rollout timesteps
+        self._obs: OrderedDict[str, List[np.ndarray]] = OrderedDict()
+        self._next_obs: OrderedDict[str, List[np.ndarray]] = OrderedDict()
         self._actions: List[np.ndarray] = []
         self._rewards: List[float] = []
         self._dones: List[bool] = []
@@ -198,7 +217,7 @@ class RolloutLatentRecorder:
         self._z: List[np.ndarray] = []
 
     def start_episode(self, obs: Dict[str, Any]) -> None:
-        keys = list(obs.keys()) if self.obs_keys is None else self.obs_keys
+        keys = sorted(obs.keys()) if self.obs_keys is None else self.obs_keys
         self.obs_keys = list(keys)
         if self.feature_hook is not None:
             self.feature_hook.clear()
@@ -237,57 +256,33 @@ class RolloutLatentRecorder:
         self._actions.append(np.asarray(action))
         self._rewards.append(float(reward))
         self._dones.append(bool(done))
-        self._infos.append({} if info is None else dict(info))
-
-    def _stack_obs(self, obs_list: Dict[str, List[np.ndarray]]) -> Dict[str, np.ndarray]:
-        out: Dict[str, np.ndarray] = {}
-        for k, items in obs_list.items():
-            if not items: continue
-            out[k] = np.stack(items, axis=0)
-        return out
-
-    def _encode_batch(self, obs_batch: Dict[str, np.ndarray]) -> np.ndarray:
-        if self.encoder is None:
-            raise RuntimeError("No encoder provided to compute latents")
-
-        if hasattr(self.encoder, "encode_obs_batch"):
-            out = self.encoder.encode_obs_batch(obs_batch, device=self.encoder_device)
-            z = out.z if hasattr(out, "z") else out
-        else:
-            out = self.encoder(obs_batch)
-            z = out.z if hasattr(out, "z") else out
-
-        return np.asarray(z, dtype=np.float32)
+        self._infos.append(OrderedDict() if info is None else \
+                           OrderedDict(sorted(info.items(), key=lambda kv: kv[0])))
 
     def finalize(
         self,
         stats: RolloutStats,
     ) -> RolloutLatentTrajectory:
-        obs = self._stack_obs(self._obs) if self.store_obs else None
-        next_obs = self._stack_obs(self._next_obs) if self.store_next_obs else None
-
-        if self._z:
-            z = np.stack(self._z, axis=0).astype(np.float32)
-        else:
-            if obs is None:
-                raise RuntimeError("No stored obs to compute latents")
-            z = self._encode_batch(obs)
-
-        actions = np.stack(self._actions, axis=0).astype(np.float32)
-        rewards = np.asarray(self._rewards, dtype=np.float32)
-        dones = np.asarray(self._dones, dtype=np.bool_)
+        """ Add final statistics object @RolloutStats to the trajectory """
+        
+        def _stack_obs_along_time(obs_list: Dict[str, List[np.ndarray]]) -> Dict[str, np.ndarray]:
+            out: OrderedDict[str, np.ndarray] = OrderedDict()
+            for k, items in obs_list.items():
+                if not items: continue
+                out[k] = np.stack(items, axis=0)
+            return out
 
         return RolloutLatentTrajectory(
-            latents=z,
-            actions=actions,
-            rewards=rewards,
-            dones=dones,
+            latents=np.stack(self._z, axis=0).astype(np.float32) if self._z else None,
+            actions= np.stack(self._actions, axis=0).astype(np.float32),
+            rewards=np.asarray(self._rewards, dtype=np.float32),
+            dones=np.asarray(self._dones, dtype=np.bool_),
             success=bool(stats.success_rate > 0.0),
             total_reward=float(stats.total_reward),
             horizon=int(stats.horizon),
             frame_stack=self.frame_stack,
-            obs=obs,
-            next_obs=next_obs,
+            obs=_stack_obs_along_time(self._obs) if self.store_obs else None,
+            next_obs=_stack_obs_along_time(self._next_obs) if self.store_next_obs else None,
             infos=self._infos,
             stats=stats,
         )
@@ -368,26 +363,36 @@ def save_rollout_latents(path: Path, traj: RolloutLatentTrajectory) -> Path:
     return path
 
 
-def load_rollout_latents(path: Path) -> Dict[str, Any]:
-    """Load rollout latents saved by save_rollout_latents.
-
-    Returns a dict with keys: latents, actions, rewards, dones, obs (optional), next_obs (optional).
-    """
+def load_rollout_latents(path: Path) -> RolloutLatentTrajectory:
+    """Load rollout latents saved by save_rollout_latents into a RolloutLatentTrajectory."""
     path = Path(path)
     assert path.is_file(), f"rollout file not found: {path}"
     assert path.suffix in {".npz", ".h5", ".hdf5"}, f"Unsupported rollout format: {path.suffix}"
 
     if path.suffix == ".npz":
         data = np.load(path, allow_pickle=True)
-        return {
-            "latents": np.asarray(data["latents"], dtype=np.float32),
-            "actions": np.asarray(data["actions"], dtype=np.float32),
-            "rewards": np.asarray(data["rewards"], dtype=np.float32),
-            "dones": np.asarray(data["dones"], dtype=np.bool_),
-            "frame_stack": int(data["frame_stack"][0]) if "frame_stack" in data else 1,
-            "obs": None,
-            "next_obs": None,
-        }
+        latents = np.asarray(data["latents"], dtype=np.float32)
+        actions = np.asarray(data["actions"], dtype=np.float32)
+        rewards = np.asarray(data["rewards"], dtype=np.float32)
+        dones = np.asarray(data["dones"], dtype=np.bool_)
+        frame_stack = int(data["frame_stack"][0]) if "frame_stack" in data else 1
+        success = bool(np.asarray(data["success"])[0]) if "success" in data else False
+        total_reward = float(np.asarray(data["total_reward"])[0]) if "total_reward" in data else float(rewards.sum())
+        horizon = int(np.asarray(data["horizon"])[0]) if "horizon" in data else int(rewards.shape[0])
+        return RolloutLatentTrajectory(
+            latents=latents,
+            actions=actions,
+            rewards=rewards,
+            dones=dones,
+            success=success,
+            total_reward=total_reward,
+            horizon=horizon,
+            frame_stack=frame_stack,
+            obs=None,
+            next_obs=None,
+            infos=None,
+            stats=None,
+        )
 
     else:
         with h5py.File(path, "r") as f:
@@ -396,156 +401,33 @@ def load_rollout_latents(path: Path) -> Dict[str, Any]:
             rewards = np.asarray(f["rewards"], dtype=np.float32)
             dones = np.asarray(f["dones"], dtype=np.bool_)
             frame_stack = int(f.attrs.get("frame_stack", 1))
+            success = bool(f.attrs.get("success", 0))
+            total_reward = float(f.attrs.get("total_reward", rewards.sum()))
+            horizon = int(f.attrs.get("horizon", rewards.shape[0]))
 
             obs = None
             if "obs" in f:
-                obs = {k: np.asarray(v) for k, v in f["obs"].items()}
+                obs = OrderedDict((k, np.asarray(v)) for k, v in f["obs"].items())
 
             next_obs = None
             if "next_obs" in f:
-                next_obs = {k: np.asarray(v) for k, v in f["next_obs"].items()}
+                next_obs = OrderedDict((k, np.asarray(v)) for k, v in f["next_obs"].items())
 
-        return {
-            "latents": latents,
-            "actions": actions,
-            "rewards": rewards,
-            "dones": dones,
-            "frame_stack": frame_stack,
-            "obs": obs,
-            "next_obs": next_obs,
-        }
+        return RolloutLatentTrajectory(
+            latents=latents,
+            actions=actions,
+            rewards=rewards,
+            dones=dones,
+            success=success,
+            total_reward=total_reward,
+            horizon=horizon,
+            frame_stack=frame_stack,
+            obs=obs,
+            next_obs=next_obs,
+            infos=None,
+            stats=None,
+        )
 
-
-def _stack_frames(z: np.ndarray, frame_stack: int) -> np.ndarray:
-    """Concatenate past frames to form stacked features per timestep."""
-    z = np.asarray(z)
-    if z.ndim == 3 and z.shape[1] == frame_stack:
-        return z.reshape(z.shape[0], -1)
-    if frame_stack <= 1:
-        if z.ndim == 3:
-            return z.reshape(z.shape[0], -1)
-        return z
-
-    if z.ndim == 3:
-        z = z.reshape(z.shape[0], -1)
-    if z.ndim != 2:
-        raise ValueError(f"Expected z with shape (T, D) or (T, S, ...), got {z.shape}")
-
-    T, D = z.shape
-    stacked = np.zeros((T, D * frame_stack), dtype=z.dtype)
-    for t in range(T):
-        frames = []
-        for i in range(frame_stack):
-            t_i = t - (frame_stack - 1 - i)
-            if t_i < 0:
-                t_i = 0
-            frames.append(z[t_i])
-        stacked[t] = np.concatenate(frames, axis=0)
-    return stacked
-
-
-class RolloutChunkDataset:
-    """Torch Dataset over chunked rollouts (N, W, D)."""
-
-    def __init__(self, x: np.ndarray, normalize: bool = False, return_meta: bool = False):
-        if x.ndim != 3:
-            raise ValueError(f"Expected (N, W, D), got {x.shape}")
-        self.x = np.asarray(x, dtype=np.float32)
-        self.normalize = bool(normalize)
-        self.return_meta = bool(return_meta)
-        self._stats = compute_normalization_stats(self.x) if self.normalize else None
-
-    @property
-    def normalization_stats(self) -> Optional[NormalizationStats]:
-        return self._stats
-
-    def __len__(self) -> int:
-        return int(self.x.shape[0])
-
-    def __getitem__(self, idx: int):
-        import torch
-
-        x = self.x[idx]
-        if self._stats is not None:
-            x = (x - self._stats.mean) / self._stats.std
-        x_t = torch.from_numpy(np.asarray(x, dtype=np.float32))
-        if self.return_meta:
-            return x_t, {"index": int(idx)}
-        return x_t
-
-
-def _resolve_rollout_paths(paths: Sequence[Path]) -> List[Path]:
-    resolved: List[Path] = []
-    for p in paths:
-        p = Path(p)
-        if p.is_dir():
-            for ext in ("*.npz", "*.h5", "*.hdf5"):
-                resolved.extend(sorted(p.glob(ext)))
-        else:
-            resolved.append(p)
-    resolved = [p for p in resolved if p.is_file()]
-    if not resolved:
-        raise FileNotFoundError("No rollout files found.")
-    return resolved
-
-
-def make_rollout_chunk_dataloader(
-    paths: Sequence[Path],
-    W: int,
-    stride: int = 1,
-    batch_size: int = 64,
-    frame_stack: int = 1,
-    source: str = "latents",
-    encoder: Optional[Any] = None,
-    obs_keys: Optional[Sequence[str]] = None,
-    include_actions: bool = True,
-    normalize: bool = True,
-    shuffle: bool = True,
-    drop_last: bool = True,
-    encoder_device: str = "cuda",
-    return_meta: bool = False,
-) -> Tuple[DataLoader, Optional[NormalizationStats]]:
-    """Prepare a DataLoader from saved rollouts for chunk diffusion training."""
-    import torch
-    from torch.utils.data import DataLoader
-
-    rollout_paths = _resolve_rollout_paths(paths)
-    chunks = []
-
-    for p in rollout_paths:
-        data = load_rollout_latents(p)
-        if source == "latents":
-            z = data["latents"]
-        elif source == "obs":
-            if data["obs"] is None:
-                raise ValueError(f"rollout {p} has no obs; save with store_obs=True")
-            if encoder is None:
-                raise ValueError("encoder must be provided when source='obs'")
-            obs = data["obs"]
-            if obs_keys is not None:
-                obs = {k: obs[k] for k in obs_keys}
-            z = extract_embeddings_batched(encoder, obs, device=encoder_device)
-        else:
-            raise ValueError(f"Unknown source={source}. Use 'latents' or 'obs'.")
-
-        z = _stack_frames(z, frame_stack)
-        actions = data["actions"]
-        rewards = data["rewards"]
-
-        if not include_actions:
-            actions = np.zeros((actions.shape[0], 0), dtype=np.float32)
-
-        demo_id = p.stem
-        chunks.extend(make_chunks(demo_id, z, actions, rewards, W=W, stride=stride))
-
-    if not chunks:
-        raise RuntimeError("No chunks produced. Check W/stride and rollout lengths.")
-
-    x = np.stack([pack_chunk_x(c) for c in chunks], axis=0).astype(np.float32)
-    dataset = RolloutChunkDataset(x, normalize=normalize, return_meta=return_meta)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
-
-    return loader, dataset.normalization_stats
 
 
 @timeit
