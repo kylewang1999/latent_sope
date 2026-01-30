@@ -143,21 +143,17 @@ class RolloutChunkDataset:
         self.states_to = np.stack(states_to_list, axis=0).astype(np.float32)
         self.actions_to = np.stack(actions_to_list, axis=0).astype(np.float32)
         self.t0 = np.asarray(t0_list, dtype=np.int64)
-        if self.states_from.ndim != 3:
-            raise ValueError(
-                f"Expected states_from to have shape (N, S, Dz), got {self.states_from.shape}"
-            )
-        if self.states_to.ndim != 3:
-            raise ValueError(
-                f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
-            )
-        if self.actions_to.ndim != 3:
-            raise ValueError(
-                f"Expected actions_to to have shape (N, W, Da), got {self.actions_to.shape}"
-            )
 
-        self.obs_dim = int(self.states_to.shape[-1])
-        self.action_dim = int(self.actions_to.shape[-1])
+        N = int(self.states_to.shape[0])
+        S = int(config.frame_stack)
+        Dz = int(z.shape[-1])
+        Da = int(actions.shape[-1])
+        assert self.states_from.shape == (N, S, Dz), f"Expected states_from to have shape (N, S, Dz), got {self.states_from.shape}"
+        assert self.states_to.shape == (N, W + 1, Dz), f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
+        assert self.actions_to.shape == (N, W, Da), f"Expected actions_to to have shape (N, W, Da), got {self.actions_to.shape}"
+
+        self.latents_dim = Dz
+        self.action_dim = Da
         self.normalize = bool(config.normalize)
         self.return_meta = bool(config.return_meta)
         self._stats = self._compute_transition_stats() if self.normalize else None
@@ -178,12 +174,12 @@ class RolloutChunkDataset:
         states_to = self.states_to[idx]
         actions_to = self.actions_to[idx]
         if self._stats is not None:
-            obs_mean = self._stats.mean[: self.obs_dim]
-            obs_std = self._stats.std[: self.obs_dim]
-            act_mean = self._stats.mean[self.obs_dim :]
-            act_std = self._stats.std[self.obs_dim :]
-            states_from = (states_from - obs_mean) / obs_std
-            states_to = (states_to - obs_mean) / obs_std
+            latents_mean = self._stats.mean[: self.latents_dim]
+            latents_std = self._stats.std[: self.latents_dim]
+            act_mean = self._stats.mean[self.latents_dim :]
+            act_std = self._stats.std[self.latents_dim :]
+            states_from = (states_from - latents_mean) / latents_std
+            states_to = (states_to - latents_mean) / latents_std
             actions_to = (actions_to - act_mean) / act_std
         states_from_t = torch.from_numpy(np.asarray(states_from, dtype=np.float32))
         states_to_t = torch.from_numpy(np.asarray(states_to, dtype=np.float32))
