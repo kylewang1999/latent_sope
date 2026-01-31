@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Dict
 
 import numpy as np
 import torch
 from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data._utils.collate import default_collate
 
 from src.latent_sope.robomimic_interface.encoders import extract_embeddings_batched
 from src.latent_sope.robomimic_interface.rollout import (
@@ -43,21 +44,21 @@ def _collect_frame_stack(latents: np.ndarray, t0: int, frame_stack: int) -> np.n
 @dataclass(frozen=True)
 class RolloutChunkDatasetConfig:
     """Config for rollout chunk dataset.
-    
+
     - chunk_size: length W of each (states, actions) chunk
     - stride: step between chunk start indices
     - frame_stack: number of past frames to condition on (overrides rollout/policy frame_stack)
     - source: "latents" (from RolloutLatentTrajectory.latents) or "obs" (from obs + encoder)
     - include_actions: include actions in chunk targets
     - normalize: apply dataset-level normalization stats
-    - return_meta: return index/demo_id/t0 metadata for debugging
+    - return_metadata: return index/demo_id/t0 metadatadata for debugging
     """
     chunk_size: int = 8
     stride: int = 8
     frame_stack: int = 2
     source: str = "latents"
     normalize: bool = False
-    return_meta: bool = True
+    return_metadata: bool = True
 
 
 class RolloutChunkDataset:
@@ -96,6 +97,7 @@ class RolloutChunkDataset:
         t0_list: List[int] = []
         for t0 in range(0, last_start + 1, config.stride):
             # SOPE trajectory chunks: (s_t, a_t, s_{t+1}, ..., s_{t+W}) and actions (a_t..a_{t+W-1}).
+            # incomplete chunks are discarded by the looping stride automatically
             states_to_list.append(self.latents[t0 : t0 + W + 1])
             actions_to_list.append(self.actions[t0 : t0 + W])
             states_from_list.append(_collect_frame_stack(self.latents, t0, S))
@@ -110,7 +112,7 @@ class RolloutChunkDataset:
         self.latents_dim = int(self.latents.shape[-1])
         self.action_dim = int(self.actions.shape[-1])
         self.normalize = bool(config.normalize)
-        self.return_meta = bool(config.return_meta)
+        self.return_metadata = bool(config.return_metadata)
         self._stats = self._compute_transition_stats() if self.normalize else None
 
     def _validate_config(self) -> None:
@@ -140,7 +142,7 @@ class RolloutChunkDataset:
                 return z[:, 0, :]
             return z
 
-        # source == "obs"
+        # otherwise, source == "obs"
         obs = self.traj.obs
         if self.obs_keys is not None:
             obs = {k: obs[k] for k in self.obs_keys}
@@ -172,18 +174,23 @@ class RolloutChunkDataset:
         states_from_t = torch.from_numpy(np.asarray(states_from, dtype=np.float32))
         states_to_t = torch.from_numpy(np.asarray(states_to, dtype=np.float32))
         actions_to_t = torch.from_numpy(np.asarray(actions_to, dtype=np.float32))
-        item = {
+
+        return {
             "states_from": states_from_t,
             "states_to": states_to_t,
             "actions_to": actions_to_t,
+            "metadata": (
+                {
+                    "index": int(idx),
+                    "demo_id": self.demo_id,
+                    "t0": int(self.t0[idx]),  # start of chunk
+                    "t1": int(self.t0[idx] + self.config.chunk_size),  # end of chunk
+                    "frame_stack": int(self.config.frame_stack),
+                }
+                if self.return_metadata
+                else None
+            ),
         }
-        if self.return_meta:
-            meta = {"index": int(idx)}
-            if self.demo_id is not None:
-                meta["demo_id"] = self.demo_id
-            meta["t0"] = int(self.t0[idx])
-            item["meta"] = meta
-        return item
 
 
 def _resolve_rollout_paths(paths: Sequence[Path]) -> List[Path]:
@@ -204,7 +211,7 @@ def _resolve_rollout_paths(paths: Sequence[Path]) -> List[Path]:
 def make_rollout_chunk_dataloader(
     paths: Sequence[Path],
     config: RolloutChunkDatasetConfig,
-    batch_size: int = 64,
+    batch_size: int = 4,
     shuffle: bool = True,
     drop_last: bool = True,
     *,
@@ -218,7 +225,9 @@ def make_rollout_chunk_dataloader(
     them into a single @ConcatDataset.
     """
     rollout_paths = _resolve_rollout_paths(paths)
-    local_config = replace(config, normalize=False)
+    pre_traj_config = replace(
+        config, normalize=False
+    )  # disable chunk-leve normalization
 
     datasets: List[RolloutChunkDataset] = []
     transitions_list: List[np.ndarray] = []
@@ -226,7 +235,7 @@ def make_rollout_chunk_dataloader(
         traj = load_rollout_latents(p)
         dataset = RolloutChunkDataset(
             traj,
-            local_config,
+            pre_traj_config,
             encoder=encoder,
             obs_keys=obs_keys,
             encoder_device=encoder_device,
@@ -249,8 +258,27 @@ def make_rollout_chunk_dataloader(
             ds.normalize = True
 
     dataset = datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
+
+    def _collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not batch:
+            return {}
+        first = batch[0]
+        out: Dict[str, Any] = {}
+
+        for key in first.keys():
+            values = [b[key] for b in batch]
+            if any(v is None for v in values):
+                out[key] = None
+            else:
+                out[key] = default_collate(values)
+        return out
+
     loader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=drop_last,
+        collate_fn=_collate_fn,
     )
 
     return loader, stats
