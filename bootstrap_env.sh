@@ -30,9 +30,16 @@ python -V
 
 REPO_ROOT="$(pwd)"
 ROBOMIMIC_DIR="${REPO_ROOT}/third_party/robomimic"
+CLEAN_DIFFUSER_DIR="${REPO_ROOT}/third_party/clean_diffuser"
 
 if [[ ! -d "${ROBOMIMIC_DIR}" ]]; then
   echo "[ERROR] Expected robomimic at: ${ROBOMIMIC_DIR}"
+  echo "        Check that the submodule exists and you ran from repo_root."
+  exit 1
+fi
+
+if [[ ! -d "${CLEAN_DIFFUSER_DIR}" ]]; then
+  echo "[ERROR] Expected clean_diffuser at: ${CLEAN_DIFFUSER_DIR}"
   echo "        Check that the submodule exists and you ran from repo_root."
   exit 1
 fi
@@ -97,9 +104,39 @@ python -m pip install --upgrade \
   wandb
 
 # ----------------------------
-# Mujoco / robosuite
+# Mujoco / robosuite / gym
 # ----------------------------
-python -m pip install --upgrade mujoco robosuite
+python -m pip install --upgrade mujoco robosuite pygame
+
+# ----------------------------
+# MuJoCo 2.1 + mujoco-py (required by d4rl)
+# ----------------------------
+MUJOCO_DIR="${HOME}/.mujoco/mujoco210"
+MUJOCO_TAR="${MUJOCO_DIR}.tar.gz"
+MUJOCO_URL="https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz"
+export MUJOCO_PY_MUJOCO_PATH="${MUJOCO_DIR}"
+export LD_LIBRARY_PATH="${MUJOCO_DIR}/bin:${LD_LIBRARY_PATH:-}"
+
+if [[ ! -d "${MUJOCO_DIR}" ]]; then
+  echo "[INFO] MuJoCo 2.1 not found. Downloading..."
+  mkdir -p "${HOME}/.mujoco"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L "${MUJOCO_URL}" -o "${MUJOCO_TAR}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "${MUJOCO_TAR}" "${MUJOCO_URL}"
+  else
+    echo "[ERROR] Neither curl nor wget is available to download MuJoCo."
+    exit 1
+  fi
+  tar -xzf "${MUJOCO_TAR}" -C "${HOME}/.mujoco"
+  rm -f "${MUJOCO_TAR}"
+fi
+
+if ! grep -Fxq 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/kyle/.mujoco/mujoco210/bin' "$HOME/.bashrc"; then
+  echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/kyle/.mujoco/mujoco210/bin' >> "$HOME/.bashrc"
+fi
+
+python -m pip install -U 'mujoco-py<2.2,>=2.1'
 
 # ----------------------------
 # robomimic (editable)
@@ -108,6 +145,12 @@ python -m pip install --upgrade mujoco robosuite
 echo "[INFO] Installing robomimic from submodule (editable)..."
 cd "${ROBOMIMIC_DIR}"
 python -m pip install -e .
+cd "${REPO_ROOT}"
+
+echo "[INFO] Installing clean_diffuser from submodule (editable)..."
+cd "${CLEAN_DIFFUSER_DIR}"
+# python -m pip install -e .
+python -m pip install -e . --no-deps --no-build-isolation # ignore dependsncies
 cd "${REPO_ROOT}"
 
 # Helpful extras around datasets / video / image IO
@@ -153,3 +196,6 @@ PY
 
 echo "[DONE] Latent SOPE bootstrap complete."
 echo "If DINOv3 weights require HF auth, run: huggingface-cli login"
+
+# For stitch-ope repo
+pip install git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl

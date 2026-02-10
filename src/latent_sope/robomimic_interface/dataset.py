@@ -23,16 +23,15 @@ class NormalizationStats:
 
 
 def compute_normalization_stats(x: np.ndarray) -> NormalizationStats:
-    """Compute (mean, std) over (N, W, D) arrays."""
-    if x.ndim != 3:
-        raise ValueError(f"Expected (N, W, D), got {x.shape}")
+    """Compute (mean, std) over (N, W, D) arrays along the (N, W) axes."""
+    assert x.ndim == 3, f"Expected (N, W, D), got {x.shape}"
     mean = x.mean(axis=(0, 1)).astype(np.float32)
     std = (x.std(axis=(0, 1)) + 1e-6).astype(np.float32)
     return NormalizationStats(mean=mean, std=std)
 
 
 def _collect_frame_stack(latents: np.ndarray, t0: int, frame_stack: int) -> np.ndarray:
-    """Collect past frames ending at t0, padding by duplicating earliest frame when needed."""
+    """Collect past frames ending (inclusive) at t0, padding by duplicating earliest frame when needed."""
     assert latents.ndim == 2, f"Expected latents with shape (T, D), got {latents.shape}"
     frames = []
     for i in range(frame_stack):
@@ -54,9 +53,11 @@ class RolloutChunkDatasetConfig:
     - return_metadata: return index/demo_id/t0 metadatadata for debugging
     """
     chunk_size: int = 8
-    stride: int = 8
+    stride: int = 2
     frame_stack: int = 2
     source: str = "latents"
+    latents_dim: int = 19
+    action_dim: int = 7
     normalize: bool = False
     return_metadata: bool = True
 
@@ -92,20 +93,23 @@ class RolloutChunkDataset:
         assert last_start >= 0, "No chunks produced. Check chunk_size/stride and rollout length."
 
         states_from_list: List[np.ndarray] = []
+        actions_from_list: List[np.ndarray] = []
         states_to_list: List[np.ndarray] = []
         actions_to_list: List[np.ndarray] = []
         t0_list: List[int] = []
         for t0 in range(0, last_start + 1, config.stride):
             # SOPE trajectory chunks: (s_t, a_t, s_{t+1}, ..., s_{t+W}) and actions (a_t..a_{t+W-1}).
             # incomplete chunks are discarded by the looping stride automatically
-            states_to_list.append(self.latents[t0 : t0 + W + 1])
-            actions_to_list.append(self.actions[t0 : t0 + W])
-            states_from_list.append(_collect_frame_stack(self.latents, t0, S))
+            states_to_list.append(self.latents[t0: t0+W+1])
+            actions_to_list.append(self.actions[t0 : t0+W])
+            states_from_list.append(_collect_frame_stack(self.latents, t0-1, S))
+            actions_from_list.append(_collect_frame_stack(self.actions, t0-1, S))
             t0_list.append(int(t0))
 
-        self.states_from = np.stack(states_from_list, axis=0).astype(np.float32)
-        self.states_to = np.stack(states_to_list, axis=0).astype(np.float32)
-        self.actions_to = np.stack(actions_to_list, axis=0).astype(np.float32)
+        self.states_from = np.stack(states_from_list, axis=0).astype(np.float32)  # (N, frame_stack, Dz)
+        self.states_to = np.stack(states_to_list, axis=0).astype(np.float32)  # (N, chunk_size + 1, Dz)
+        self.actions_to = np.stack(actions_to_list, axis=0).astype(np.float32)  # (N, chunk_size, Da)
+        self.actions_from = np.stack(actions_from_list, axis=0).astype(np.float32)  # (N, frame_stack, Da)
         self.t0 = np.asarray(t0_list, dtype=np.int64)
         self._validate_data_shapes()
 
@@ -113,7 +117,7 @@ class RolloutChunkDataset:
         self.action_dim = int(self.actions.shape[-1])
         self.normalize = bool(config.normalize)
         self.return_metadata = bool(config.return_metadata)
-        self._stats = self._compute_transition_stats() if self.normalize else None
+        self.stats = self._compute_normalization_stats() if self.normalize else None
 
     def _validate_config(self) -> None:
         if self.config.source == "latents":
@@ -132,7 +136,8 @@ class RolloutChunkDataset:
         Dz = int(self.traj.latents.shape[-1])
         Da = int(self.traj.actions.shape[-1])
         assert self.states_from.shape == (N, S, Dz), f"Expected states_from to have shape (N, S, Dz), got {self.states_from.shape}"
-        assert self.states_to.shape == (N, W + 1, Dz), f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
+        assert self.actions_from.shape == (N, S, Da), f"Expected actions_from to have shape (N, S, Da), got {self.actions_from.shape}"
+        assert self.states_to.shape == (N, W+1, Dz), f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
         assert self.actions_to.shape == (N, W, Da), f"Expected actions_to to have shape (N, W, Da), got {self.actions_to.shape}"
 
     def _preprocess_latents(self) -> np.ndarray:
@@ -148,35 +153,44 @@ class RolloutChunkDataset:
             obs = {k: obs[k] for k in self.obs_keys}
         return extract_embeddings_batched(self.encoder, obs, device=self.encoder_device)
 
-    def _compute_transition_stats(self) -> NormalizationStats:
+    def _compute_normalization_stats(self) -> NormalizationStats:
         x = np.concatenate([self.states_to[:, :-1, :], self.actions_to], axis=-1)
         return compute_normalization_stats(x)
 
     @property
     def normalization_stats(self) -> Optional[NormalizationStats]:
-        return self._stats
+        return self.stats
 
     def __len__(self) -> int:
         return int(self.states_to.shape[0])
 
     def __getitem__(self, idx: int):
         states_from = self.states_from[idx]
+        actions_from = self.actions_from[idx]
         states_to = self.states_to[idx]
         actions_to = self.actions_to[idx]
-        if self._stats is not None:
-            latents_mean = self._stats.mean[: self.latents_dim]
-            latents_std = self._stats.std[: self.latents_dim]
-            act_mean = self._stats.mean[self.latents_dim :]
-            act_std = self._stats.std[self.latents_dim :]
+        # NOTE: With the current construction, `states_from` ends at t0-1 and
+        # `states_to` starts at t0. You can concatenate along time to form a
+        # continuous, non-overlapping state sequence:
+        #   full_states = np.concatenate([states_from, states_to], axis=0)
+        # This yields state sequence length (frame_stack + chunk_size + 1), and
+        # action sequence length (chunk_size).
+        if self.normalize and self.stats is not None:
+            latents_mean = self.stats.mean[: self.latents_dim]
+            latents_std = self.stats.std[: self.latents_dim]
+            act_mean = self.stats.mean[self.latents_dim :]
+            act_std = self.stats.std[self.latents_dim :]
             states_from = (states_from - latents_mean) / latents_std
             states_to = (states_to - latents_mean) / latents_std
             actions_to = (actions_to - act_mean) / act_std
         states_from_t = torch.from_numpy(np.asarray(states_from, dtype=np.float32))
+        actions_from_t = torch.from_numpy(np.asarray(actions_from, dtype=np.float32))
         states_to_t = torch.from_numpy(np.asarray(states_to, dtype=np.float32))
         actions_to_t = torch.from_numpy(np.asarray(actions_to, dtype=np.float32))
 
         return {
             "states_from": states_from_t,
+            "actions_from": actions_from_t,
             "states_to": states_to_t,
             "actions_to": actions_to_t,
             "metadata": (
@@ -249,12 +263,15 @@ def make_rollout_chunk_dataloader(
     if not datasets:
         raise RuntimeError("No chunks produced. Check W/stride and rollout lengths.")
 
-    stats = None
+    # normalize at super-trajectory level, not single-traj-level, not chunk level
+    # stacking rule: [state_dims, action_dims] -> [state_dims + action_dims]
+    stats: Optional[NormalizationStats] = None
     if config.normalize:
         x = np.concatenate(transitions_list, axis=0).astype(np.float32)
         stats = compute_normalization_stats(x)
+        # update normalization stats for each sub-dataset
         for ds in datasets:
-            ds._stats = stats
+            ds.stats = stats
             ds.normalize = True
 
     dataset = datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
