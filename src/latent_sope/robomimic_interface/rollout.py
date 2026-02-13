@@ -11,14 +11,14 @@ import h5py
 
 import torch
 import numpy as np
+import robomimic.utils.obs_utils as ObsUtils
+from robomimic.models.obs_nets import ObservationEncoder
 from robomimic.algo import RolloutPolicy, PolicyAlgo
 from robomimic.utils import tensor_utils as TensorUtils
 from robomimic.envs.env_base import EnvBase
 
 from src.latent_sope.robomimic_interface.encoders import resolve_module
 from src.latent_sope.utils.common import timeit
-import robomimic.utils.obs_utils as ObsUtils
-
 
 @dataclass
 class RolloutStats:
@@ -43,106 +43,83 @@ class RolloutLatentTrajectory:
 
 
 class PolicyFeatureHook:
-    """Attach a forward hook to a policy module and cache the latest features.
-    Warning: This is only tested with the `low_dim_concat` regime.
-    - Docs on PyTorch nn module forward_hook: https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html
+    """Attach forward hooks to cache features.
+
+    Supported feat_type:
+      - low_dim_concat: (original) hooks policy obs encoder output (often concat of low-dim)
+      - visual_latent : (new) hooks VisualCore output for an rgb key and mirrors
+                        activation -> rand.forward_out -> flatten to produce [B, D]
     """
-    def _resolve_obs_encoder(self) -> Any:
-        # we want the ObservationEncoder (the thing that has obs_nets / obs_randomizers / activation)
-        candidates = [
-            "policy.nets.policy.nets.encoder.nets.obs",   # common in robomimic policy nets
-            "policy.nets.policy.obs_encoder",             # your existing comment says this exists
-            "nets.policy.nets.encoder.nets.obs",
-            "nets.policy.obs_encoder",
-        ]
-        for path in candidates:
-            try:
-                enc = resolve_module(self.policy, path)
-            except Exception:
-                continue
-            # ObservationEncoder has these attributes
-            if hasattr(enc, "obs_nets") and hasattr(enc, "obs_randomizers") and hasattr(enc, "activation"):
-                return enc
-        raise ValueError(
-            "Could not resolve ObservationEncoder. "
-            "Tried common paths. You may need to pass rgb_key explicitly or adjust candidates."
-        )
-
-    def _pick_rgb_key(self, obs_encoder) -> str:
-        if self.rgb_key is not None:
-            return self.rgb_key
-
-        # try to pick from encoder's registered obs keys
-        keys = list(getattr(obs_encoder, "obs_shapes", {}).keys())
-        rgb_keys = [k for k in keys if ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb")]
-
-        if len(rgb_keys) == 0:
-            raise ValueError(
-                f"No rgb keys found in obs_encoder.obs_shapes. Keys were: {keys}. "
-                "This policy might be low-dim only, or rgb key name is not registered."
-            )
-        # prefer agentview if present
-        for k in rgb_keys:
-            if "agentview" in k:
-                return k
-        return rgb_keys[0]
-
 
     def __init__(
         self,
         policy: Any,
         obs_keys: Optional[Sequence[str]] = None,
         feat_type: str = "low_dim_concat",
+        rgb_key: Optional[str] = None,   # optional override for visual_latent
     ):
+        feat_type = str(feat_type).lower()
         assert feat_type in {"low_dim_concat", "high_dim_encode", "visual_latent"}, f"Unknown feat_type: {feat_type}"
+
         self.policy = policy
         self.frame_stack = get_policy_frame_stack(policy)
+        self.feat_type = feat_type
+
+        # NOTE: historically this was low-dim keys; keep for compatibility
         self.obs_keys = sorted(
             list(_get_nested_attr(policy, "policy.obs_config.modalities.obs.low_dim"))
             if obs_keys is None
             else list(obs_keys)
         )
 
-        self.feat_type = str(feat_type).lower()
-
         self._last_feature = None
 
-        # This module is what we will "force-run" in update_latent_from_obs
+        # This module is what update_latent_from_obs force-runs.
         self._policy_module = self._resolve_policy_module()
 
+        # Hook handles
         self._hook_handle = None
         self._vis_hook_handle = None
 
+        # Visual-latent state
+        self._obs_encoder = None
+        self._rgb_key = None
+        self._visual_net = None
+        self._randomizers = None
+        self._activation = None
+
         if self.feat_type == "visual_latent":
+            # ---- find ObservationEncoder inside the SAME object used at rollout time ----
             obs_encoder = self._resolve_obs_encoder()
-            rgb_key = self._pick_rgb_key(obs_encoder)
+
+            # choose rgb key
+            self._rgb_key = rgb_key or self._pick_rgb_key(obs_encoder)
+
+            if self._rgb_key not in obs_encoder.obs_nets:
+                raise RuntimeError(
+                    f"rgb_key '{self._rgb_key}' not found in obs_encoder.obs_nets keys: {list(obs_encoder.obs_nets.keys())}"
+                )
 
             self._obs_encoder = obs_encoder
-            self._rgb_key = rgb_key
-
-            # VisualCore / VisualCoreLanguageConditioned
-            self._visual_net = obs_encoder.obs_nets[rgb_key]
-            self._randomizers = list(obs_encoder.obs_randomizers[rgb_key])
+            self._visual_net = obs_encoder.obs_nets[self._rgb_key]              # VisualCore / VisualCoreLanguageConditioned
+            self._randomizers = list(obs_encoder.obs_randomizers[self._rgb_key])
             self._activation = obs_encoder.activation
 
             def _vis_hook(_module, _inp, out):
                 x = out
-
-                # mirror ObservationEncoder.forward post-net steps
+                # mirror ObservationEncoder.forward AFTER obs_nets[k](x)
                 if self._activation is not None:
                     x = self._activation(x)
-
                 for rand in reversed(self._randomizers):
                     if rand is not None:
                         x = rand.forward_out(x)
-
                 x = TensorUtils.flatten(x, begin_axis=1).detach()
                 self._last_feature = x
 
             self._vis_hook_handle = self._visual_net.register_forward_hook(_vis_hook)
 
         else:
-            # original behavior: hook policy module output
+            # ---- original behavior: hook policy module output ----
             def _hook(_module, _inp, out):
                 if torch.is_tensor(out):
                     feat = out.detach()
@@ -154,10 +131,12 @@ class PolicyFeatureHook:
 
             self._hook_handle = self._policy_module.register_forward_hook(_hook)
 
-
+    # ----------------------------
+    # module resolution helpers
+    # ----------------------------
     def _resolve_policy_module(self) -> Any:
         candidates = [
-            "policy.nets.policy.obs_encoder", # for low_dim diffusion polciy
+            "policy.nets.policy.obs_encoder",  # diffusion policy (often ObservationGroupEncoder)
             "nets.policy",
             "policy",
         ]
@@ -173,10 +152,60 @@ class PolicyFeatureHook:
             return self.policy
 
         raise ValueError(
-            "Could not resolve a torch policy module for low_dim_concat. "
+            "Could not resolve a torch policy module for hooks. "
             "Pass a policy with nets['policy'] or a policy module that supports hooks."
         )
 
+    def _resolve_obs_encoder(self) -> ObservationEncoder:
+        """
+        Find the first ObservationEncoder inside the rollout-time policy object.
+        We try a few roots (policy wrapper, nested policy net) to avoid hooking
+        the wrong module instance.
+        """
+        roots = []
+
+        # Try the rollout wrapper first
+        roots.append(self.policy)
+
+        # Try nested modules commonly present in RolloutPolicy wrapper
+        for p in ["policy", "policy.nets.policy", "nets.policy"]:
+            try:
+                roots.append(resolve_module(self.policy, p))
+            except Exception:
+                pass
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_roots = []
+        for r in roots:
+            if r is None:
+                continue
+            rid = id(r)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            unique_roots.append(r)
+
+        for r in unique_roots:
+            for name, m in getattr(r, "named_modules", lambda: [])():
+                if isinstance(m, ObservationEncoder):
+                    return m
+
+        raise RuntimeError(
+            "Could not find ObservationEncoder inside the rollout policy modules. "
+            "This checkpoint may not be vision-enabled (no rgb modality in obs encoder)."
+        )
+
+    def _pick_rgb_key(self, obs_encoder: ObservationEncoder) -> str:
+        keys = list(obs_encoder.obs_shapes.keys())
+        rgb_keys = [k for k in keys if ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb")]
+        if len(rgb_keys) == 0:
+            raise RuntimeError(f"No rgb keys in ObservationEncoder.obs_shapes. Keys were: {keys}")
+        return rgb_keys[0]
+
+    # ----------------------------
+    # policy / shape helpers
+    # ----------------------------
     def _get_policy_algo(self) -> PolicyAlgo:
         return getattr(self.policy, "policy", self.policy)
 
@@ -187,25 +216,17 @@ class PolicyFeatureHook:
             return obs_shapes
         raise RuntimeError("Policy does not expose obs_shapes needed to encode observations.")
 
+    # ----------------------------
+    # feature refresh
+    # ----------------------------
     def update_latent_from_obs(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
-        """Invoke the hook with policy-formatted inputs to refresh cached features.
+        """Force-run model forward so hooks fire (needed for diffusion action buffer)."""
 
-        This is needed because the policy's action buffer and horizon settings can result in
-        the policy's forward pass (which invokes the registered forward hook) to run every 
-        `action_horizon` (configured through robomimic's config by `algo.horizon.action_horizon`)
-        and therefore skipping the hook update. As a remedy we force the hook update here
-        through @update_latent_from_obs by running the policy's pass forcefully using 
-        @TensorUtils.time_distributed
-        """
-        
         def _prepare_obs_inputs(obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             prep: RolloutPolicy = self.policy if hasattr(self.policy, "_prepare_observation") else getattr(self.policy, "policy", None)
-            assert prep is not None and hasattr(prep, "_prepare_observation"), "Policy does not expose _prepare_observation needed to encode observations."
+            assert prep is not None and hasattr(prep, "_prepare_observation"), \
+                "Policy does not expose _prepare_observation needed to encode observations."
 
-            # Robomimic policies maintain an internal action buffer and expect observations shaped
-            # to match the configured horizon settings (e.g., observation_horizon=2, action_horizon=8,
-            # prediction_horizon=16 for diffusion policies). We mirror that preparation here so the
-            # hook sees inputs in the exact same format the policy forward uses.
             obs_t = prep._prepare_observation(obs, batched_ob=False)
             inputs = {"obs": obs_t}
             if goal is not None:
@@ -214,10 +235,12 @@ class PolicyFeatureHook:
             obs_shapes = self._get_obs_shapes()
             if obs_shapes is not None:
                 for k in obs_shapes:
+                    # add time dimension if missing
                     if inputs["obs"][k].ndim - 1 == len(obs_shapes[k]):
                         inputs["obs"][k] = inputs["obs"][k].unsqueeze(1)
             return inputs
-        
+
+        # IMPORTANT: allow visual_latent to use the same "force-run" pathway
         if self.feat_type not in {"low_dim_concat", "visual_latent"}:
             return
 
@@ -232,22 +255,24 @@ class PolicyFeatureHook:
         self._last_feature = None
 
     def close(self) -> None:
-        for hname in ["_hook_handle", "_vis_hook_handle"]:
-            h = getattr(self, hname, None)
+        for h in [self._hook_handle, self._vis_hook_handle]:
             if h is not None:
                 try:
                     h.remove()
                 except Exception:
                     pass
-                finally:
-                    setattr(self, hname, None)
+        self._hook_handle = None
+        self._vis_hook_handle = None
 
-
-    def __del__(self): self.close()
+    def __del__(self):
+        self.close()
 
     def pull_feat(self, clear: bool = True) -> np.ndarray:
-        """Return last captured feature as a float32 numpy array."""
-        assert self._last_feature is not None, "Feature hook has no cached output. Ensure the module runs during policy forward before calling pull_feat."
+        """Return last captured feature as float32 numpy array."""
+        assert self._last_feature is not None, (
+            "Feature hook has no cached output. Ensure the module runs during policy forward "
+            "before calling pull_feat."
+        )
 
         feat = self._last_feature
         if hasattr(feat, "detach"):
@@ -255,7 +280,8 @@ class PolicyFeatureHook:
         else:
             feat = np.asarray(feat)
 
-        if clear: self.clear()
+        if clear:
+            self.clear()
 
         return np.asarray(feat, dtype=np.float32)
 
@@ -271,12 +297,14 @@ class RolloutLatentRecorder:
 
     def __init__(
         self,
-        policy: Any,
+        feature_hook: PolicyFeatureHook,
         obs_keys: Optional[Sequence[str]] = None,
-        feat_type: str = "low_dim_concat",
-        rgb_key: Optional[str] = None,
+        store_obs: bool = True,
+        store_next_obs: bool = False,
+        encoder: Optional[Any] = None,
+        encoder_device: str = "cuda",
+        frame_stack: Optional[int] = None,
     ):
-        self.rgb_key = rgb_key
         self.feature_hook = feature_hook
         self.obs_keys = None if obs_keys is None else sorted(obs_keys)
         self.store_obs = bool(store_obs)
