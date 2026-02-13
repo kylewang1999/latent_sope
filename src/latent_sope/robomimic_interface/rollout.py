@@ -17,6 +17,8 @@ from robomimic.envs.env_base import EnvBase
 
 from src.latent_sope.robomimic_interface.encoders import resolve_module
 from src.latent_sope.utils.common import timeit
+import robomimic.utils.obs_utils as ObsUtils
+
 
 @dataclass
 class RolloutStats:
@@ -45,6 +47,46 @@ class PolicyFeatureHook:
     Warning: This is only tested with the `low_dim_concat` regime.
     - Docs on PyTorch nn module forward_hook: https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html
     """
+    def _resolve_obs_encoder(self) -> Any:
+        # we want the ObservationEncoder (the thing that has obs_nets / obs_randomizers / activation)
+        candidates = [
+            "policy.nets.policy.nets.encoder.nets.obs",   # common in robomimic policy nets
+            "policy.nets.policy.obs_encoder",             # your existing comment says this exists
+            "nets.policy.nets.encoder.nets.obs",
+            "nets.policy.obs_encoder",
+        ]
+        for path in candidates:
+            try:
+                enc = resolve_module(self.policy, path)
+            except Exception:
+                continue
+            # ObservationEncoder has these attributes
+            if hasattr(enc, "obs_nets") and hasattr(enc, "obs_randomizers") and hasattr(enc, "activation"):
+                return enc
+        raise ValueError(
+            "Could not resolve ObservationEncoder. "
+            "Tried common paths. You may need to pass rgb_key explicitly or adjust candidates."
+        )
+
+    def _pick_rgb_key(self, obs_encoder) -> str:
+        if self.rgb_key is not None:
+            return self.rgb_key
+
+        # try to pick from encoder's registered obs keys
+        keys = list(getattr(obs_encoder, "obs_shapes", {}).keys())
+        rgb_keys = [k for k in keys if ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb")]
+
+        if len(rgb_keys) == 0:
+            raise ValueError(
+                f"No rgb keys found in obs_encoder.obs_shapes. Keys were: {keys}. "
+                "This policy might be low-dim only, or rgb key name is not registered."
+            )
+        # prefer agentview if present
+        for k in rgb_keys:
+            if "agentview" in k:
+                return k
+        return rgb_keys[0]
+
 
     def __init__(
         self,
@@ -52,7 +94,7 @@ class PolicyFeatureHook:
         obs_keys: Optional[Sequence[str]] = None,
         feat_type: str = "low_dim_concat",
     ):
-        assert feat_type in {"low_dim_concat", "high_dim_encode"}, f"Unknown feat_type: {feat_type}"
+        assert feat_type in {"low_dim_concat", "high_dim_encode", "visual_latent"}, f"Unknown feat_type: {feat_type}"
         self.policy = policy
         self.frame_stack = get_policy_frame_stack(policy)
         self.obs_keys = sorted(
@@ -63,18 +105,55 @@ class PolicyFeatureHook:
 
         self.feat_type = str(feat_type).lower()
 
-        def _hook(_module, _inp, out):
-            if torch.is_tensor(out):
-                feat = out.detach()
-            elif isinstance(out, (list, tuple)) and out and torch.is_tensor(out[0]):
-                feat = out[0].detach()
-            else:
-                feat = out
-            self._last_feature = feat
-
         self._last_feature = None
+
+        # This module is what we will "force-run" in update_latent_from_obs
         self._policy_module = self._resolve_policy_module()
-        self._hook_handle = self._policy_module.register_forward_hook(_hook)
+
+        self._hook_handle = None
+        self._vis_hook_handle = None
+
+        if self.feat_type == "visual_latent":
+            obs_encoder = self._resolve_obs_encoder()
+            rgb_key = self._pick_rgb_key(obs_encoder)
+
+            self._obs_encoder = obs_encoder
+            self._rgb_key = rgb_key
+
+            # VisualCore / VisualCoreLanguageConditioned
+            self._visual_net = obs_encoder.obs_nets[rgb_key]
+            self._randomizers = list(obs_encoder.obs_randomizers[rgb_key])
+            self._activation = obs_encoder.activation
+
+            def _vis_hook(_module, _inp, out):
+                x = out
+
+                # mirror ObservationEncoder.forward post-net steps
+                if self._activation is not None:
+                    x = self._activation(x)
+
+                for rand in reversed(self._randomizers):
+                    if rand is not None:
+                        x = rand.forward_out(x)
+
+                x = TensorUtils.flatten(x, begin_axis=1).detach()
+                self._last_feature = x
+
+            self._vis_hook_handle = self._visual_net.register_forward_hook(_vis_hook)
+
+        else:
+            # original behavior: hook policy module output
+            def _hook(_module, _inp, out):
+                if torch.is_tensor(out):
+                    feat = out.detach()
+                elif isinstance(out, (list, tuple)) and out and torch.is_tensor(out[0]):
+                    feat = out[0].detach()
+                else:
+                    feat = out
+                self._last_feature = feat
+
+            self._hook_handle = self._policy_module.register_forward_hook(_hook)
+
 
     def _resolve_policy_module(self) -> Any:
         candidates = [
@@ -139,10 +218,9 @@ class PolicyFeatureHook:
                         inputs["obs"][k] = inputs["obs"][k].unsqueeze(1)
             return inputs
         
-        if self.feat_type != "low_dim_concat":
-            # Warning: might actually need to implement the corresponding logic for
-            # the high_dim_encode feat_type as well - need to find out
+        if self.feat_type not in {"low_dim_concat", "visual_latent"}:
             return
+
         inputs = _prepare_obs_inputs(obs, goal=goal)
         _ = TensorUtils.time_distributed(inputs, self._policy_module, inputs_as_kwargs=True)
 
@@ -154,13 +232,16 @@ class PolicyFeatureHook:
         self._last_feature = None
 
     def close(self) -> None:
-        if self._hook_handle is not None:
-            try:
-                self._hook_handle.remove()
-            except Exception:
-                pass
-            finally:
-                self._hook_handle = None
+        for hname in ["_hook_handle", "_vis_hook_handle"]:
+            h = getattr(self, hname, None)
+            if h is not None:
+                try:
+                    h.remove()
+                except Exception:
+                    pass
+                finally:
+                    setattr(self, hname, None)
+
 
     def __del__(self): self.close()
 
@@ -190,14 +271,12 @@ class RolloutLatentRecorder:
 
     def __init__(
         self,
-        feature_hook: PolicyFeatureHook,
+        policy: Any,
         obs_keys: Optional[Sequence[str]] = None,
-        store_obs: bool = True,
-        store_next_obs: bool = False,
-        encoder: Optional[Any] = None,
-        encoder_device: str = "cuda",
-        frame_stack: Optional[int] = None,
+        feat_type: str = "low_dim_concat",
+        rgb_key: Optional[str] = None,
     ):
+        self.rgb_key = rgb_key
         self.feature_hook = feature_hook
         self.obs_keys = None if obs_keys is None else sorted(obs_keys)
         self.store_obs = bool(store_obs)
