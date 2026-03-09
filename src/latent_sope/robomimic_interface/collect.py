@@ -1,4 +1,39 @@
-"""Batch collection of latent rollout trajectories from a robomimic policy."""
+"""Batch collection of latent rollout trajectories from a robomimic policy.
+
+Rolls out a behavior policy for many episodes, extracting latent features at
+each timestep via ``PolicyFeatureHook``, and saves each trajectory as an HDF5
+file. The resulting ``.h5`` files form the offline dataset consumed by Step 2
+(``make_rollout_chunk_dataloader``).
+
+Typical workflow:
+    1. Load a robomimic checkpoint with ``load_checkpoint()``.
+    2. Call ``collect_rollouts(ckpt, output_dir, num_rollouts=100)`` to generate
+       the offline dataset. Each episode is saved as ``rollout_NNNN.h5``.
+    3. Pass the directory (or file paths) to ``make_rollout_chunk_dataloader()``
+       in Step 2 to chunk and batch the data for diffusion training.
+
+The offline dataset only needs to be collected once per (policy, horizon) pair.
+Subsequent experiments (different diffusion hyperparameters, guidance settings,
+etc.) reuse the same data files.
+
+Each ``.h5`` file contains:
+    - ``latents``:  (T, frame_stack, Dz) encoder features per timestep
+    - ``actions``:  (T, Da) actions taken by the behavior policy
+    - ``rewards``:  (T,) per-step scalar rewards
+    - ``dones``:    (T,) boolean termination flags
+    - ``obs/``:     (optional) raw observations per key
+
+Functions:
+    collect_rollouts  -- Run policy N times, save trajectories to disk.
+    discover_obs_keys -- Auto-discover low-dim observation keys from a checkpoint.
+
+Example::
+
+    ckpt = load_checkpoint("path/to/run_dir", ckpt_path="last.pth")
+    collection = collect_rollouts(ckpt, output_dir="data/rollouts/lift/",
+                                  num_rollouts=100, horizon=60)
+    # collection.paths -> [Path('data/rollouts/lift/rollout_0000.h5'), ...]
+"""
 
 from __future__ import annotations
 

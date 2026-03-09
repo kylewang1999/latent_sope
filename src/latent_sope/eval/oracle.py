@@ -1,7 +1,41 @@
-"""Oracle (on-policy) baseline: run a policy in the environment and compute ground truth value."""
+"""Oracle (on-policy) baseline for off-policy evaluation.
+
+Computes the ground-truth expected return V^pi of a policy by running it
+on-policy in the environment. This value is the target that the OPE pipeline
+(Steps 2-6) attempts to estimate without running the policy.
+
+Typical workflow:
+    1. Load a robomimic checkpoint with ``load_checkpoint()``.
+    2. Call ``oracle_value(ckpt, num_rollouts=100)`` to get the true value.
+    3. Call ``save_oracle_result()`` to persist the result as JSON.
+    4. At evaluation time (Step 7), call ``load_oracle_result()`` and compare
+       the OPE estimate against the saved ground truth.
+
+The oracle only needs to be computed once per (policy, horizon) pair and can
+be reused across many OPE experiments.
+
+Functions:
+    oracle_value              -- Run policy in env, return mean undiscounted return.
+    oracle_value_from_trajectories -- Compute (optionally discounted) returns
+                                     from pre-collected RolloutLatentTrajectory objects.
+    save_oracle_result        -- Persist an OracleResult to JSON.
+    load_oracle_result        -- Reload a saved OracleResult from JSON.
+
+Example::
+
+    ckpt = load_checkpoint("path/to/run_dir", ckpt_path="last.pth")
+    result = oracle_value(ckpt, num_rollouts=100, horizon=60)
+    save_oracle_result("data/oracle/my_policy.json", result,
+                       policy_name="diffusion_policy_epoch_50")
+
+    # Later, in a different session:
+    result = load_oracle_result("data/oracle/my_policy.json")
+    print(result.mean_return)
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,4 +158,43 @@ def oracle_value_from_trajectories(
         gamma=gamma,
         horizon=horizon,
         num_rollouts=len(returns),
+    )
+
+
+def save_oracle_result(path: Path, result: OracleResult, policy_name: Optional[str] = None) -> Path:
+    """Save an OracleResult to a JSON file.
+
+    Args:
+        path: output path (should end in .json)
+        result: OracleResult to save
+        policy_name: optional label for the policy (e.g. "diffusion_policy_epoch_50")
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "mean_return": result.mean_return,
+        "std_return": result.std_return,
+        "returns": result.returns.tolist(),
+        "gamma": result.gamma,
+        "horizon": result.horizon,
+        "num_rollouts": result.num_rollouts,
+    }
+    if policy_name is not None:
+        data["policy_name"] = policy_name
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+    return path
+
+
+def load_oracle_result(path: Path) -> OracleResult:
+    """Load an OracleResult from a JSON file saved by save_oracle_result."""
+    with open(path, "r") as f:
+        data = json.load(f)
+    return OracleResult(
+        mean_return=data["mean_return"],
+        std_return=data["std_return"],
+        returns=np.array(data["returns"], dtype=np.float32),
+        gamma=data["gamma"],
+        horizon=data["horizon"],
+        num_rollouts=data["num_rollouts"],
     )
