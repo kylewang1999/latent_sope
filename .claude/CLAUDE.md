@@ -118,7 +118,7 @@ of directly invoking the env's Python (`/path/to/envs/latent_sope/bin/python`).
 
 ## OPE Pipeline Progress
 
-The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-1 are complete, Steps 2-7 need work.
+The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3 are complete, Steps 4-7 need work.
 
 ### Step 0: Ground Truth — DONE
 - `eval/oracle.py`: `oracle_value(ckpt, num_rollouts, horizon)` → `OracleResult`
@@ -133,17 +133,31 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-1 are complet
 - Uses `LowDimConcatEncoder` (feat_type="low_dim_concat") — latents = concatenated obs keys
 - Tested: 3 rollouts on Lift, latents shape (T, 2, 19), actions (T, 7)
 
-### Step 2: Chunk the Offline Data — EXISTS, needs integration
-- `dataset.py`: `make_rollout_chunk_dataloader(paths, config)` already works
-- Takes .h5 paths from Step 1, returns DataLoader + NormalizationStats
-- Verified: Step 1 output feeds into Step 2 correctly (batch shapes check out)
+### Step 2: Chunk the Offline Data — DONE
+- `dataset.py`: `make_rollout_chunk_dataloader(paths, config)` → DataLoader + NormalizationStats
+- Takes .h5 paths from Step 1, chunks into `(states_from, actions_from, states_to, actions_to)`
+- Normalization computed at super-trajectory level across all rollout files
 - Config: `RolloutChunkDatasetConfig(chunk_size=8, stride=2, frame_stack=2, source="latents")`
+- Tested: batch shapes `states_from (B,2,19)`, `states_to (B,9,19)`, `actions_to (B,8,7)`
+- **Gotcha**: latents are (T, frame_stack, D) — use `shape[-1]` not `shape[1]` for feature dim
 
-### Step 3: Train Chunk Diffusion — EXISTS, needs integration
+### Step 3: Train Chunk Diffusion — DONE
 - `diffusion/train.py`: `train()` loop with gradient clipping, checkpointing
 - `diffusion/sope_diffuser.py`: `SopeDiffuser` wraps TemporalUnet + GaussianDiffusion
 - `cross_validate_configs()` checks dataset↔diffusion dim alignment
+- Notebook inlines training loop for visibility; `train.train()` also works standalone
+- Checkpoint saved to `policy_train_dir/diffusion_ckpts/sope_diffuser_latest.pt`
+- Tested: 5 epochs on 10 rollouts, loss decreasing, checkpoint saves correctly
 - Only `source='latents'` works (`source='obs'` raises ValueError in train.py:108)
+- No validation loss / eval during training (not yet implemented)
+
+### Current Scale & Scaling Plan
+- **Current notebook settings**: K=10 oracle rollouts, N_ROLLOUTS=5 offline, EPOCHS=5 training
+- Each rollout takes ~15s (Lift, horizon=60). Each ~60-step trajectory yields ~25 chunks (chunk_size=8, stride=2).
+- 5 rollouts = ~125 chunks = only 2 batches of 64. The diffusion model barely sees any data.
+- **Next milestone (medium)**: 50 rollouts + 50 epochs. Step 1 ≈ 12 min, Step 3 ≈ 5 min. Total ≈ 20 min.
+- **Full scale**: 200 rollouts + 100 epochs. Step 1 ≈ 50 min, Step 3 ≈ 30 min. Total ≈ 1.5 hr.
+- Oracle (Step 0) should also scale: K=50–100 for tighter estimate (~12–25 min).
 
 ### Step 4: Policy Guidance — NEEDS BUILDING
 - SOPE's `GaussianDiffusion` has guidance via `gradlog_diffusion()` which calls `policy.grad_log_prob(state, action)`
