@@ -214,6 +214,92 @@ class SopeDiffuser:
             **kwargs,
         )
 
+    @torch.no_grad()
+    def generate_full_trajectory(
+        self,
+        initial_states: torch.Tensor,
+        max_length: int = 60,
+        guided: bool = False,
+        verbose: bool = False,
+        **guidance_kw,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Generate full trajectories by stitching diffusion chunks.
+
+        Autoregressively generates chunks, conditioning each chunk on the last
+        `frame_stack` states of the previous chunk.
+
+        Args:
+            initial_states: (B, state_dim) unnormalized initial states.
+            max_length: maximum trajectory length in steps.
+            guided: whether to use policy guidance during sampling.
+            verbose: print progress during sampling.
+
+        Returns:
+            states: (B, T, state_dim) generated states (unnormalized).
+            actions: (B, T, action_dim) generated actions (unnormalized).
+            end_indices: (B,) actual length of each trajectory.
+        """
+        self.diffusion.eval()
+
+        batch_size = initial_states.shape[0]
+        chunk_horizon = self.cfg.chunk_horizon
+        frame_stack = self.cfg.frame_stack
+        total_horizon = self.cfg.total_chunk_horizon
+
+        # Pre-allocate output arrays
+        all_states = np.zeros((batch_size, max_length, self.state_dim), dtype=np.float32)
+        all_actions = np.zeros((batch_size, max_length, self.action_dim), dtype=np.float32)
+        end_indices = np.full(batch_size, max_length, dtype=np.int64)
+
+        # Normalize initial states: pad with zero actions, normalize, extract state dims
+        # (normalizer operates on full transition_dim = state_dim + action_dim)
+        init_dev = initial_states.to(self.device)
+        dummy_actions = torch.zeros(batch_size, self.action_dim, device=self.device)
+        init_padded = torch.cat([init_dev, dummy_actions], dim=-1)
+        init_norm = self.normalizer(init_padded)[:, :self.state_dim]
+
+        # Initialize conditioning: duplicate initial state for all frame_stack positions
+        cond_states = init_norm.unsqueeze(1).expand(-1, frame_stack, -1).clone()
+
+        total_generated = 0
+        while total_generated < max_length:
+            steps_to_add = min(chunk_horizon, max_length - total_generated)
+
+            # Build conditioning dict: pin frame_stack positions to state dims
+            cond = {t: cond_states[:, t, :] for t in range(frame_stack)}
+
+            shape = (batch_size, total_horizon, self.transition_dim)
+            sample = self.diffusion.conditional_sample(
+                shape=shape,
+                cond=cond,
+                guided=guided,
+                verbose=verbose,
+                **guidance_kw,
+            )
+
+            # Unnormalize the generated chunk
+            chunk = self.unnormalizer(sample.trajectories)  # (B, total_horizon, D)
+
+            # Extract generated part (after frame_stack conditioning)
+            gen_states = chunk[:, frame_stack:, :self.state_dim]  # (B, chunk_horizon, state_dim)
+            gen_actions = chunk[:, frame_stack:, self.state_dim:]  # (B, chunk_horizon, action_dim)
+
+            # Store in output arrays
+            t_end = total_generated + steps_to_add
+            all_states[:, total_generated:t_end, :] = gen_states[:, :steps_to_add, :].cpu().numpy()
+            all_actions[:, total_generated:t_end, :] = gen_actions[:, :steps_to_add, :].cpu().numpy()
+
+            total_generated = t_end
+
+            if total_generated >= max_length:
+                break
+
+            # Prepare conditioning for next chunk: last frame_stack generated states (normalized)
+            next_cond_states = sample.trajectories[:, -frame_stack:, :self.state_dim]
+            cond_states = next_cond_states.clone()
+
+        return all_states, all_actions, end_indices
+
 
 def cross_validate_configs(
     cfg_dataset: RolloutChunkDatasetConfig,
