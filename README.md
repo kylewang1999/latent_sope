@@ -37,6 +37,9 @@ conda activate latent_sope
 ```
 
 > [!CAUTION]
+> **Python 3.10 is required.** `mujoco_py` fails to compile on Python 3.11+ (Cython incompatibility), and `d4rl` requires Python <3.11. Do not use a different Python version.
+
+> [!CAUTION]
 > This conda environment installs CUDA 12-based wheels. It may not work on some GPUs (e.g., L40S) if the node's NVIDIA driver or CUDA compatibility is not aligned with CUDA 12. The easiest way to fix this by relinquishing the current compute node and requesting a new one with a different GPU (v100/a100/a40).
 
 3\. Run [bootstrap_env.sh](bootstrap_env.sh) first to install packages into the new env.
@@ -45,12 +48,18 @@ conda activate latent_sope
 bash bootstrap_env.sh
 ```
 
-4\. Then run [bootstrap_egl.sh](bootstrap_egl.sh) while that env is active to set up the EGL environment variables (for headless rendering on servers).
+4\. Add the following to your `~/.bashrc` (required by `mujoco_py` at import time):
+```bash
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/.mujoco/mujoco210/bin:/usr/lib/nvidia
+```
+Then reload: `source ~/.bashrc`
+
+5\. Run [bootstrap_egl.sh](bootstrap_egl.sh) while the env is active to set up the EGL environment variables (for headless rendering on servers).
 ```bash
 bash bootstrap_egl.sh
 ```
 
-5\. Re-activate the env apply the EGL variables in your shell:
+6\. Re-activate the env to apply the EGL variables in your shell:
 ```bash
 conda deactivate && conda activate latent_sope
 ```
@@ -58,3 +67,6 @@ conda deactivate && conda activate latent_sope
 ### Test the environment
 
 1\. Click through [scripts/hello_robomimic.ipynb](scripts/hello_robomimic.ipynb) to test the environment.
+
+> [!NOTE]
+> The `robosuite_models` and `mink` warnings during import can be safely ignored — they are for robots (e.g., GR1) not used in this project.

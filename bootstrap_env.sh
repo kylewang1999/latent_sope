@@ -132,8 +132,8 @@ if [[ ! -d "${MUJOCO_DIR}" ]]; then
   rm -f "${MUJOCO_TAR}"
 fi
 
-if ! grep -Fxq 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/kyle/.mujoco/mujoco210/bin' "$HOME/.bashrc"; then
-  echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/kyle/.mujoco/mujoco210/bin' >> "$HOME/.bashrc"
+if ! grep -Fq '.mujoco/mujoco210/bin' "$HOME/.bashrc"; then
+  echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:'"${HOME}"'/.mujoco/mujoco210/bin' >> "$HOME/.bashrc"
 fi
 
 python -m pip install -U 'mujoco-py<2.2,>=2.1'
