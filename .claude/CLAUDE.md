@@ -14,13 +14,17 @@ src/latent_sope/
     encoders.py         # LowDimConcatEncoder, HighDimObsEncoder (hook-based feature extraction)
     dataset.py          # RolloutChunkDataset: chunks rollout trajectories into (states_from, actions_from, states_to, actions_to)
     rollout.py          # PolicyFeatureHook, RolloutLatentRecorder, rollout(), save/load latent trajectories (.npz/.h5)
+    collect.py          # [Step 1] Batch offline data collection: collect_rollouts(), discover_obs_keys()
   eval/
+    oracle.py           # [Step 0] Ground-truth V^pi: oracle_value(), save/load_oracle_result()
     metrics.py          # L2 chunk reconstruction error
   utils/
     common.py           # Logging (rich), config (hydra/omegaconf), video display, nnx save/load, wandb helpers
     misc.py             # Seeding, device resolution
 scripts/
+  latent_sope.ipynb     # Main pipeline notebook (Steps 0-7)
   hello_robomimic.ipynb # Environment test notebook
+  hello_stitch_ope.ipynb # SOPE demo on D4RL
 third_party/
   sope/                 # SOPE repo (TemporalUnet, GaussianDiffusion, diffuser baselines)
   robomimic/            # robomimic (editable install via submodule)
@@ -112,6 +116,71 @@ it reports Python 3.11 even when the env has 3.10, because the user-site `site.p
 **Fix:** Set `PYTHONNOUSERSITE=1` in scripts and kernel specs, or avoid `conda run` in favor
 of directly invoking the env's Python (`/path/to/envs/latent_sope/bin/python`).
 
+## OPE Pipeline Progress
+
+The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-1 are complete, Steps 2-7 need work.
+
+### Step 0: Ground Truth — DONE
+- `eval/oracle.py`: `oracle_value(ckpt, num_rollouts, horizon)` → `OracleResult`
+- `save_oracle_result()` / `load_oracle_result()` persist to JSON
+- Only supports gamma=1.0; for discounted use `oracle_value_from_trajectories()`
+- Tested end-to-end on Lift diffusion policy checkpoint
+
+### Step 1: Collect Offline Data — DONE
+- `robomimic_interface/collect.py`: `collect_rollouts(ckpt, output_dir, num_rollouts)` → `CollectionResult`
+- `discover_obs_keys(ckpt)` auto-discovers low-dim obs keys
+- Saves `.h5` files via `save_rollout_latents()`, consumed directly by Step 2
+- Uses `LowDimConcatEncoder` (feat_type="low_dim_concat") — latents = concatenated obs keys
+- Tested: 3 rollouts on Lift, latents shape (T, 2, 19), actions (T, 7)
+
+### Step 2: Chunk the Offline Data — EXISTS, needs integration
+- `dataset.py`: `make_rollout_chunk_dataloader(paths, config)` already works
+- Takes .h5 paths from Step 1, returns DataLoader + NormalizationStats
+- Verified: Step 1 output feeds into Step 2 correctly (batch shapes check out)
+- Config: `RolloutChunkDatasetConfig(chunk_size=8, stride=2, frame_stack=2, source="latents")`
+
+### Step 3: Train Chunk Diffusion — EXISTS, needs integration
+- `diffusion/train.py`: `train()` loop with gradient clipping, checkpointing
+- `diffusion/sope_diffuser.py`: `SopeDiffuser` wraps TemporalUnet + GaussianDiffusion
+- `cross_validate_configs()` checks dataset↔diffusion dim alignment
+- Only `source='latents'` works (`source='obs'` raises ValueError in train.py:108)
+
+### Step 4: Policy Guidance — NEEDS BUILDING
+- SOPE's `GaussianDiffusion` has guidance via `gradlog_diffusion()` which calls `policy.grad_log_prob(state, action)`
+- Robomimic policies don't expose `grad_log_prob`. Need wrapper per policy type:
+  - BC_Gaussian: extract mean/std → analytic Gaussian log-prob
+  - BC_GMM: log-sum-exp over mixture components
+  - DiffusionPolicyUNet: use diffusion score
+- `SopeDiffuser.sample()` passes `guided=self.cfg.guided` but ignores `guidance_hyperparams`
+- With LowDimConcatEncoder, latents=obs so policy can consume states directly
+- For MVP: skip guidance, sample unguided first
+
+### Step 5: Stitching Loop — NEEDS BUILDING
+- `SopeDiffuser.sample()` generates single chunks but stitching loop is TODO (sope_diffuser.py:28)
+- Need to port `Diffuser.generate_full_trajectory()` from third_party/sope
+- Prototype exists in latent_sope.ipynb Step 5 cell (`stitch_trajectory_latent()`)
+- Sub-tasks: autoregressive conditioning, termination predicate, initial state sampling, end_indices tracking
+- Robomimic tasks use fixed horizon (no early termination), simplifying this
+
+### Step 6: Reward Estimation — NEEDS BUILDING
+- Option A (MVP): decode latents→obs via `LowDimConcatEncoder.decode_to_obs_dict()`, use env reward function
+- Option B: train MLP reward model R(z,a)→r on offline (latent, action, reward) tuples
+- Need discounted return computation: sum(gamma^t * r_t)
+- Nothing exists in src yet for this
+
+### Step 7: OPE Evaluation — NEEDS BUILDING
+- Compare OPE estimate to oracle value from Step 0
+- Metrics needed: MSE, Spearman rank correlation (across multiple policies), Regret@k
+- `eval/metrics.py` only has `l2_chunk_error()` currently
+- Need multi-policy evaluation harness
+
+### Critical Path (MVP)
+1. Use LowDimConcatEncoder (latents = obs, keeps reward/guidance in obs space)
+2. Start unguided (skip Step 4)
+3. Build stitching loop (Step 5)
+4. Score with true reward via decoder (Step 6 Option A)
+5. Add guidance later once unguided pipeline works end-to-end
+
 ## Development Notes
 
 - The codebase uses both JAX/Flax (in `utils/common.py` for nnx modules) and PyTorch (for diffusion and robomimic)
@@ -120,3 +189,7 @@ of directly invoking the env's Python (`/path/to/envs/latent_sope/bin/python`).
 - Normalization is computed at the super-trajectory level across all rollout files, not per-trajectory
 - Configs are frozen dataclasses: `SopeDiffusionConfig`, `RolloutChunkDatasetConfig`, `TrainingConfig`
 - `cross_validate_configs()` checks dimension alignment between dataset and diffusion configs
+- Test checkpoint: `third_party/robomimic/diffusion_policy_trained_models/test/20260309132349/`
+- Conda env Python: `/home1/reishuen/miniconda3/envs/latent_sope/bin/python`
+- Always use `PYTHONNOUSERSITE=1` when running outside conda activate (avoids Python 3.11 site-packages conflicts)
+- `@timeit` decorator on `rollout()` is noisy for batch operations; `oracle.py` and `collect.py` suppress it by temporarily raising CONSOLE_LOGGER level
