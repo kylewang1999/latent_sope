@@ -38,9 +38,12 @@ Example::
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple, List
 
 import numpy as np
 import torch
@@ -98,6 +101,76 @@ def discover_obs_keys(
     return all_keys
 
 
+def _collect_worker(
+    ckpt_run_dir: str,
+    ckpt_path: str,
+    output_dir: str,
+    rollout_indices: List[int],
+    horizon: int,
+    obs_keys: List[str],
+    feat_type: str,
+    store_obs: bool,
+    worker_id: int,
+) -> List[Tuple[str, float, float]]:
+    """Worker function for parallel rollout collection.
+
+    Each worker builds its own policy (CPU) and env, runs its assigned rollouts,
+    saves .h5 files, and returns (path, reward, success) tuples.
+    """
+    import logging as _logging
+    from src.latent_sope.robomimic_interface.checkpoints import (
+        load_checkpoint as _load_checkpoint,
+        build_rollout_policy_from_checkpoint as _build_policy,
+        build_env_from_checkpoint as _build_env,
+    )
+    from src.latent_sope.robomimic_interface.rollout import (
+        rollout as _rollout,
+        PolicyFeatureHook as _PolicyFeatureHook,
+        RolloutLatentRecorder as _RolloutLatentRecorder,
+        save_rollout_latents as _save_rollout_latents,
+    )
+    from src.latent_sope.utils.common import CONSOLE_LOGGER as _LOGGER
+
+    _prev = _LOGGER.level
+    _LOGGER.setLevel(_logging.WARNING)
+    try:
+        ckpt = _load_checkpoint(ckpt_run_dir, ckpt_path=ckpt_path)
+        policy = _build_policy(ckpt, device="cpu", verbose=False)
+        env = _build_env(ckpt, render=False, render_offscreen=False, verbose=False)
+
+        results = []
+        for idx in rollout_indices:
+            feature_hook = _PolicyFeatureHook(
+                policy,
+                obs_keys=obs_keys,
+                feat_type=feat_type,
+            )
+            recorder = _RolloutLatentRecorder(
+                feature_hook,
+                obs_keys=obs_keys,
+                store_obs=store_obs,
+                store_next_obs=False,
+            )
+
+            stats = _rollout(
+                policy=policy,
+                env=env,
+                horizon=horizon,
+                render=False,
+                recorder=recorder,
+            )
+            traj = recorder.finalize(stats)
+
+            save_path = Path(output_dir) / f"rollout_{idx:04d}.h5"
+            _save_rollout_latents(save_path, traj)
+            feature_hook.close()
+
+            results.append((str(save_path), stats.total_reward, stats.success_rate))
+        return results
+    finally:
+        _LOGGER.setLevel(_prev)
+
+
 def collect_rollouts(
     ckpt: RobomimicCheckpoint,
     output_dir: Path,
@@ -108,6 +181,7 @@ def collect_rollouts(
     store_obs: bool = True,
     device: str = "cuda",
     verbose: bool = True,
+    num_workers: int = 0,
 ) -> CollectionResult:
     """Collect multiple latent rollout trajectories and save them to disk.
 
@@ -119,8 +193,11 @@ def collect_rollouts(
         obs_keys: obs keys to record (auto-discovered from policy if None)
         feat_type: "low_dim_concat" or "high_dim_encode"
         store_obs: whether to store raw observations alongside latents
-        device: torch device for policy
+        device: torch device for policy (only used when num_workers=0; parallel
+            workers always use CPU to maximize parallelism)
         verbose: print progress
+        num_workers: number of parallel worker processes. 0 = serial (original
+            behavior). -1 = auto-detect (uses os.cpu_count()).
 
     Returns:
         CollectionResult with paths and summary statistics
@@ -128,62 +205,115 @@ def collect_rollouts(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    policy = build_rollout_policy_from_checkpoint(ckpt, device=device, verbose=False)
-    env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
-
     if obs_keys is None:
         obs_keys = discover_obs_keys(ckpt)
     obs_keys = sorted(obs_keys)
 
-    paths = []
-    total_rewards = []
-    success_rates = []
+    if num_workers == -1:
+        num_workers = os.cpu_count() or 1
+    num_workers = min(num_workers, num_rollouts)
 
-    # Suppress per-rollout @timeit logging
-    prev_level = CONSOLE_LOGGER.level
-    CONSOLE_LOGGER.setLevel(logging.WARNING)
-    try:
-        for i in range(num_rollouts):
-            feature_hook = PolicyFeatureHook(
-                policy,
-                obs_keys=obs_keys,
-                feat_type=feat_type,
+    # ---------- serial path (original behavior) ----------
+    if num_workers <= 0:
+        policy = build_rollout_policy_from_checkpoint(ckpt, device=device, verbose=False)
+        env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
+
+        paths = []
+        total_rewards = []
+        success_rates = []
+
+        prev_level = CONSOLE_LOGGER.level
+        CONSOLE_LOGGER.setLevel(logging.WARNING)
+        try:
+            for i in range(num_rollouts):
+                feature_hook = PolicyFeatureHook(
+                    policy,
+                    obs_keys=obs_keys,
+                    feat_type=feat_type,
+                )
+                recorder = RolloutLatentRecorder(
+                    feature_hook,
+                    obs_keys=obs_keys,
+                    store_obs=store_obs,
+                    store_next_obs=False,
+                )
+
+                stats = rollout(
+                    policy=policy,
+                    env=env,
+                    horizon=horizon,
+                    render=False,
+                    recorder=recorder,
+                )
+                traj = recorder.finalize(stats)
+
+                save_path = output_dir / f"rollout_{i:04d}.h5"
+                save_rollout_latents(save_path, traj)
+                feature_hook.close()
+
+                paths.append(save_path)
+                total_rewards.append(stats.total_reward)
+                success_rates.append(stats.success_rate)
+
+                if verbose and (i + 1) % max(1, num_rollouts // 10) == 0:
+                    print(f"  [{i+1}/{num_rollouts}] reward={stats.total_reward:.1f}, "
+                          f"success={stats.success_rate:.0%}, "
+                          f"latents={traj.latents.shape}")
+        finally:
+            CONSOLE_LOGGER.setLevel(prev_level)
+
+        return CollectionResult(
+            output_dir=output_dir,
+            num_rollouts=num_rollouts,
+            paths=paths,
+            total_rewards=np.array(total_rewards, dtype=np.float32),
+            success_rates=np.array(success_rates, dtype=np.float32),
+        )
+
+    # ---------- parallel path ----------
+    if verbose:
+        print(f"  collect: launching {num_workers} workers for {num_rollouts} rollouts")
+
+    # Distribute rollout indices evenly across workers
+    all_indices = list(range(num_rollouts))
+    chunks = [[] for _ in range(num_workers)]
+    for i, idx in enumerate(all_indices):
+        chunks[i % num_workers].append(idx)
+
+    ckpt_run_dir = str(ckpt.run_dir)
+    ckpt_rel_path = str(ckpt.ckpt_path.relative_to(ckpt.run_dir))
+
+    ctx = mp.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as pool:
+        futures = [
+            pool.submit(
+                _collect_worker,
+                ckpt_run_dir, ckpt_rel_path, str(output_dir),
+                chunk, horizon, list(obs_keys), feat_type, store_obs, wid,
             )
-            recorder = RolloutLatentRecorder(
-                feature_hook,
-                obs_keys=obs_keys,
-                store_obs=store_obs,
-                store_next_obs=False,
-            )
+            for wid, chunk in enumerate(chunks)
+            if chunk
+        ]
+        all_results = []
+        for fut in futures:
+            all_results.extend(fut.result())
 
-            stats = rollout(
-                policy=policy,
-                env=env,
-                horizon=horizon,
-                render=False,
-                recorder=recorder,
-            )
-            traj = recorder.finalize(stats)
+    # Sort by rollout index (file name) to maintain deterministic ordering
+    all_results.sort(key=lambda r: r[0])
 
-            save_path = output_dir / f"rollout_{i:04d}.h5"
-            save_rollout_latents(save_path, traj)
-            feature_hook.close()
+    paths = [Path(r[0]) for r in all_results]
+    total_rewards = np.array([r[1] for r in all_results], dtype=np.float32)
+    success_rates_arr = np.array([r[2] for r in all_results], dtype=np.float32)
 
-            paths.append(save_path)
-            total_rewards.append(stats.total_reward)
-            success_rates.append(stats.success_rate)
-
-            if verbose and (i + 1) % max(1, num_rollouts // 10) == 0:
-                print(f"  [{i+1}/{num_rollouts}] reward={stats.total_reward:.1f}, "
-                      f"success={stats.success_rate:.0%}, "
-                      f"latents={traj.latents.shape}")
-    finally:
-        CONSOLE_LOGGER.setLevel(prev_level)
+    if verbose:
+        print(f"  collect: {num_rollouts} rollouts done, "
+              f"mean reward={total_rewards.mean():.1f}, "
+              f"success rate={success_rates_arr.mean():.0%}")
 
     return CollectionResult(
         output_dir=output_dir,
         num_rollouts=num_rollouts,
         paths=paths,
-        total_rewards=np.array(total_rewards, dtype=np.float32),
-        success_rates=np.array(success_rates, dtype=np.float32),
+        total_rewards=total_rewards,
+        success_rates=success_rates_arr,
     )

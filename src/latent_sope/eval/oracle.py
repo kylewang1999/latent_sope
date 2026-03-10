@@ -37,6 +37,9 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing as mp
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -66,6 +69,43 @@ class OracleResult:
     num_rollouts: int
 
 
+def _oracle_worker(
+    ckpt_run_dir: str,
+    ckpt_path: str,
+    num_rollouts: int,
+    horizon: int,
+    worker_id: int,
+) -> np.ndarray:
+    """Worker function for parallel oracle rollouts.
+
+    Each worker builds its own policy (CPU) and env, runs its assigned rollouts,
+    and returns the per-rollout rewards. Runs on CPU to allow maximum parallelism.
+    """
+    import logging as _logging
+    from src.latent_sope.robomimic_interface.checkpoints import (
+        load_checkpoint as _load_checkpoint,
+        build_rollout_policy_from_checkpoint as _build_policy,
+        build_env_from_checkpoint as _build_env,
+    )
+    from src.latent_sope.robomimic_interface.rollout import rollout as _rollout
+    from src.latent_sope.utils.common import CONSOLE_LOGGER as _LOGGER
+
+    _prev = _LOGGER.level
+    _LOGGER.setLevel(_logging.WARNING)
+    try:
+        ckpt = _load_checkpoint(ckpt_run_dir, ckpt_path=ckpt_path)
+        policy = _build_policy(ckpt, device="cpu", verbose=False)
+        env = _build_env(ckpt, render=False, render_offscreen=False, verbose=False)
+
+        returns = np.empty(num_rollouts, dtype=np.float64)
+        for i in range(num_rollouts):
+            stats = _rollout(policy=policy, env=env, horizon=horizon, render=False)
+            returns[i] = stats.total_reward
+        return returns
+    finally:
+        _LOGGER.setLevel(_prev)
+
+
 def oracle_value(
     ckpt: RobomimicCheckpoint,
     num_rollouts: int = 100,
@@ -73,6 +113,7 @@ def oracle_value(
     gamma: float = 1.0,
     device: str = "cuda",
     verbose: bool = True,
+    num_workers: int = 0,
 ) -> OracleResult:
     """Compute the ground-truth value of a policy by running it in the environment.
 
@@ -85,8 +126,11 @@ def oracle_value(
         num_rollouts: number of episodes to average over
         horizon: max steps per episode
         gamma: discount factor (must be 1.0; see above)
-        device: torch device for policy
+        device: torch device for policy (only used when num_workers=0; parallel
+            workers always use CPU to maximize parallelism)
         verbose: print progress
+        num_workers: number of parallel worker processes. 0 = serial (original
+            behavior). -1 = auto-detect (uses os.cpu_count()).
 
     Returns:
         OracleResult with mean/std return and per-rollout returns
@@ -98,24 +142,65 @@ def oracle_value(
             "and use oracle_value_from_trajectories() instead."
         )
 
-    policy = build_rollout_policy_from_checkpoint(ckpt, device=device, verbose=False)
-    env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
+    if num_workers == -1:
+        num_workers = os.cpu_count() or 1
+    num_workers = min(num_workers, num_rollouts)
 
-    returns = np.empty(num_rollouts, dtype=np.float64)
+    # ---------- serial path (original behavior) ----------
+    if num_workers <= 0:
+        policy = build_rollout_policy_from_checkpoint(ckpt, device=device, verbose=False)
+        env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
 
-    # Suppress per-rollout @timeit logging (one line per rollout is too noisy)
-    prev_level = CONSOLE_LOGGER.level
-    CONSOLE_LOGGER.setLevel(logging.WARNING)
-    try:
-        for i in range(num_rollouts):
-            stats = rollout(policy=policy, env=env, horizon=horizon, render=False)
-            returns[i] = stats.total_reward
+        returns = np.empty(num_rollouts, dtype=np.float64)
 
-            if verbose and (i + 1) % max(1, num_rollouts // 10) == 0:
-                print(f"  oracle rollout [{i+1}/{num_rollouts}] "
-                      f"running mean={returns[:i+1].mean():.3f}")
-    finally:
-        CONSOLE_LOGGER.setLevel(prev_level)
+        prev_level = CONSOLE_LOGGER.level
+        CONSOLE_LOGGER.setLevel(logging.WARNING)
+        try:
+            for i in range(num_rollouts):
+                stats = rollout(policy=policy, env=env, horizon=horizon, render=False)
+                returns[i] = stats.total_reward
+
+                if verbose and (i + 1) % max(1, num_rollouts // 10) == 0:
+                    print(f"  oracle rollout [{i+1}/{num_rollouts}] "
+                          f"running mean={returns[:i+1].mean():.3f}")
+        finally:
+            CONSOLE_LOGGER.setLevel(prev_level)
+
+        return OracleResult(
+            mean_return=float(returns.mean()),
+            std_return=float(returns.std()),
+            returns=returns.astype(np.float32),
+            gamma=gamma,
+            horizon=horizon,
+            num_rollouts=num_rollouts,
+        )
+
+    # ---------- parallel path ----------
+    if verbose:
+        print(f"  oracle: launching {num_workers} workers for {num_rollouts} rollouts")
+
+    # Distribute rollouts evenly across workers
+    base, remainder = divmod(num_rollouts, num_workers)
+    worker_counts = [base + (1 if i < remainder else 0) for i in range(num_workers)]
+
+    ckpt_run_dir = str(ckpt.run_dir)
+    ckpt_rel_path = str(ckpt.ckpt_path.relative_to(ckpt.run_dir))
+
+    ctx = mp.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as pool:
+        futures = [
+            pool.submit(_oracle_worker, ckpt_run_dir, ckpt_rel_path, count, horizon, wid)
+            for wid, count in enumerate(worker_counts)
+            if count > 0
+        ]
+        all_returns = []
+        for fut in futures:
+            all_returns.append(fut.result())
+
+    returns = np.concatenate(all_returns)
+    if verbose:
+        print(f"  oracle: {num_rollouts} rollouts done, "
+              f"mean={returns.mean():.3f} ± {returns.std():.3f}")
 
     return OracleResult(
         mean_return=float(returns.mean()),
