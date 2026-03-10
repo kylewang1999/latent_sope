@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/home1/reishuen/.local/bin/jupyter", line 3, in <module>
+    from jupyter_core.command import main
+ModuleNotFoundError: No module named 'jupyter_core'

@@ -207,6 +207,46 @@ The `results/` directory serves as a lab notebook. When the user asks to log or 
 - Use descriptive filenames (e.g., `ope_summary_50rollouts.png`, `notes.md`)
 - Update this section or add a `results/YYYY-MM-DD/notes.md` with observations when asked
 
+## Running Overnight Experiments (SLURM)
+
+Submit notebooks as SLURM jobs — they survive SSH disconnects, have guaranteed GPU time, and save outputs directly into the notebook.
+
+```bash
+# Submit a notebook
+bash scripts/submit_notebook.sh experiments/2026-03-10/500k_steps.ipynb
+
+# Check status
+bash scripts/check_job.sh              # all jobs + latest log
+bash scripts/check_job.sh <job_id>     # specific job + tail log
+squeue -u $USER                        # raw SLURM status
+
+# View output log
+cat slurm_logs/<job_id>_<name>.out
+
+# Cancel
+scancel <job_id>
+```
+
+**How it works:** `scripts/run_notebook.sbatch` runs `jupyter nbconvert --execute --inplace` on a V100 GPU node with 48hr walltime, 32G RAM, 4 CPUs. All notebook outputs (plots, prints) are saved back into the `.ipynb` file. When done, just open the notebook.
+
+**SLURM job won't be lost** if you disconnect SSH — it runs independently on the compute node. The only risk is hitting the walltime limit (48hr) or the node going down (rare).
+
+### Alternative: tmux (for quick local runs)
+
+```bash
+tmux new-session -d -s <session_name> \
+  "PYTHONNOUSERSITE=1 LD_LIBRARY_PATH=$HOME/.mujoco/mujoco210/bin:/usr/lib/nvidia:$LD_LIBRARY_PATH \
+   MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
+   /home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter nbconvert \
+   --to notebook --execute --inplace <notebook_path> \
+   --ExecutePreprocessor.timeout=-1 \
+   2>&1 | tee <log_path>; echo 'DONE'; exec bash"
+```
+
+- `tmux attach -t <session_name>` — reattach
+- `tmux ls` — list sessions
+- **Note:** tmux dies if the login node restarts or if SSH socket cleanup happens. Prefer SLURM for long runs.
+
 ## Development Notes
 
 - The codebase uses both JAX/Flax (in `utils/common.py` for nnx modules) and PyTorch (for diffusion and robomimic)
