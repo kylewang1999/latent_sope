@@ -106,6 +106,55 @@ def _oracle_worker(
         _LOGGER.setLevel(_prev)
 
 
+def _rollout_with_reward_fn(policy, env, horizon, reward_fn, encoder):
+    """Run a single rollout and re-score with a custom reward function.
+
+    Records per-step observations, encodes them into latent vectors,
+    then scores with reward_fn. Returns the original RolloutStats
+    (for success tracking) and the per-step rewards from reward_fn.
+    """
+    from copy import deepcopy
+
+    policy.start_episode()
+    obs = env.reset()
+    state_dict = env.get_state()
+    obs = env.reset_to(state_dict)
+
+    obs_list = []
+    success = False
+    total_env_reward = 0.0
+
+    for step_i in range(horizon):
+        obs_list.append({k: np.asarray(v) for k, v in obs.items()})
+        act = policy(ob=obs)
+        next_obs, reward, done, info = env.step(act)
+        total_env_reward += reward
+        success = env.is_success()["task"]
+
+        if done or success:
+            # Record the final obs too
+            obs_list.append({k: np.asarray(v) for k, v in next_obs.items()})
+            break
+        obs = deepcopy(next_obs)
+
+    # Build latent states from recorded obs and score with reward_fn
+    obs_keys = encoder.obs_keys
+    T = len(obs_list)
+    latents = np.concatenate(
+        [np.stack([obs_list[t][k] for t in range(T)]) for k in obs_keys],
+        axis=-1,
+    )  # (T, state_dim)
+    obs_dict = encoder.decode_to_obs_dict(latents)
+    per_step_rewards = reward_fn(obs_dict).astype(np.float64)
+
+    stats = RolloutStats(
+        total_reward=total_env_reward,
+        horizon=(step_i + 1),
+        success_rate=float(success),
+    )
+    return stats, per_step_rewards
+
+
 def oracle_value(
     ckpt: RobomimicCheckpoint,
     num_rollouts: int = 100,
@@ -114,32 +163,41 @@ def oracle_value(
     device: str = "cuda",
     verbose: bool = True,
     num_workers: int = 0,
+    reward_fn=None,
+    encoder=None,
 ) -> OracleResult:
     """Compute the ground-truth value of a policy by running it in the environment.
-
-    Only supports gamma=1.0 (undiscounted returns) because rollout() only returns
-    total reward. For discounted returns, use oracle_value_from_trajectories() with
-    pre-collected RolloutLatentTrajectory objects that have per-step rewards.
 
     Args:
         ckpt: loaded robomimic checkpoint (from load_checkpoint)
         num_rollouts: number of episodes to average over
         horizon: max steps per episode
-        gamma: discount factor (must be 1.0; see above)
+        gamma: discount factor (must be 1.0 when reward_fn is None, since
+            rollout() only returns total reward)
         device: torch device for policy (only used when num_workers=0; parallel
             workers always use CPU to maximize parallelism)
         verbose: print progress
         num_workers: number of parallel worker processes. 0 = serial (original
             behavior). -1 = auto-detect (uses os.cpu_count()).
+        reward_fn: optional reward function (e.g. LiftRewardFn) to re-score
+            rollout observations. When provided, per-step obs are recorded and
+            scored with this function instead of using the env's built-in reward.
+            Only supported with num_workers=0 (serial path).
+        encoder: LowDimConcatEncoder, required when reward_fn is provided.
+            Used to decode latent states into obs dicts for the reward fn.
 
     Returns:
         OracleResult with mean/std return and per-rollout returns
     """
-    if gamma < 1.0:
+    if reward_fn is not None and encoder is None:
+        raise ValueError("encoder is required when reward_fn is provided")
+    if reward_fn is not None and num_workers > 0:
+        raise ValueError("reward_fn re-scoring only supported with num_workers=0 (serial path)")
+    if gamma < 1.0 and reward_fn is None:
         raise ValueError(
-            f"oracle_value() only supports gamma=1.0 (got {gamma}). "
-            "For discounted returns, collect trajectories with collect_rollouts() "
-            "and use oracle_value_from_trajectories() instead."
+            f"oracle_value() only supports gamma=1.0 without reward_fn (got {gamma}). "
+            "Either provide a reward_fn for per-step scoring, or use "
+            "oracle_value_from_trajectories() with pre-collected trajectories."
         )
 
     if num_workers == -1:
@@ -157,8 +215,16 @@ def oracle_value(
         CONSOLE_LOGGER.setLevel(logging.WARNING)
         try:
             for i in range(num_rollouts):
-                stats = rollout(policy=policy, env=env, horizon=horizon, render=False)
-                returns[i] = stats.total_reward
+                if reward_fn is not None:
+                    # Run rollout and re-score with the provided reward function
+                    stats, per_step_rewards = _rollout_with_reward_fn(
+                        policy, env, horizon, reward_fn, encoder,
+                    )
+                    discounts = gamma ** np.arange(len(per_step_rewards))
+                    returns[i] = float((discounts * per_step_rewards).sum())
+                else:
+                    stats = rollout(policy=policy, env=env, horizon=horizon, render=False)
+                    returns[i] = stats.total_reward
 
                 if verbose and (i + 1) % max(1, num_rollouts // 10) == 0:
                     print(f"  oracle rollout [{i+1}/{num_rollouts}] "
@@ -215,19 +281,40 @@ def oracle_value(
 def oracle_value_from_trajectories(
     trajectories: Sequence,
     gamma: float = 1.0,
+    reward_fn=None,
+    encoder=None,
 ) -> OracleResult:
     """Compute oracle value from pre-collected RolloutLatentTrajectory objects.
 
-    Useful when gamma < 1.0, since we need per-step rewards.
+    Useful when gamma < 1.0, since we need per-step rewards. Also useful when
+    you need the oracle to use the same reward function as OPE scoring (e.g.
+    LiftRewardFn) instead of the environment's built-in reward.
 
     Args:
         trajectories: sequence of RolloutLatentTrajectory objects
         gamma: discount factor
+        reward_fn: optional reward function (e.g. LiftRewardFn) to re-score
+            trajectories. If None, uses traj.rewards from the environment.
+        encoder: LowDimConcatEncoder, required when reward_fn is provided.
+            Used to decode latent states into obs dicts for the reward fn.
     """
+    if reward_fn is not None and encoder is None:
+        raise ValueError("encoder is required when reward_fn is provided")
+
     returns = []
     horizon = 0
     for traj in trajectories:
-        rewards = traj.rewards
+        if reward_fn is not None:
+            # Re-score using the provided reward function
+            latents = np.asarray(traj.latents, dtype=np.float32)
+            # Handle (T, frame_stack, D) latents — take first frame
+            if latents.ndim == 3:
+                latents = latents[:, 0, :]
+            obs_dict = encoder.decode_to_obs_dict(latents)
+            rewards = reward_fn(obs_dict)
+        else:
+            rewards = traj.rewards
+
         if gamma >= 1.0:
             returns.append(float(rewards.sum()))
         else:
