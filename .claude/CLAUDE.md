@@ -23,9 +23,10 @@ src/latent_sope/
     common.py           # Logging (rich), config (hydra/omegaconf), video display, nnx save/load, wandb helpers
     misc.py             # Seeding, device resolution
 scripts/
-  latent_sope_5_rollouts.ipynb   # Main pipeline notebook (Steps 0-7), 5 rollouts
   hello_robomimic.ipynb # Environment test notebook
   hello_stitch_ope.ipynb # SOPE demo on D4RL
+experiments/             # Experiment notebooks — organized by date (YYYY-MM-DD subfolders)
+  2026-03-09/            # e.g. latent_sope_5_rollouts.ipynb, latent_sope_50_rollouts.ipynb
 results/                 # Lab notebook — organized by date (YYYY-MM-DD subfolders)
 third_party/
   sope/                 # SOPE repo (TemporalUnet, GaussianDiffusion, diffuser baselines)
@@ -189,6 +190,13 @@ The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts
    - Training: 100 epochs on ~5000 chunks (~78 batches/epoch) ≈ 15 min
    - Can reuse existing 50 rollouts and collect 150 more
 3. Add policy guidance (Step 4) once unguided pipeline produces reasonable estimates
+
+## Experiments
+
+The `experiments/` directory stores experiment notebooks, organized by date (`YYYY-MM-DD/` subfolders). Each new experiment should get a fresh notebook in the current date's folder. Always create new notebooks for new experiments rather than modifying old ones — previous notebooks serve as a record of what was tried.
+
+- `scripts/` holds reusable utility notebooks (e.g., `hello_robomimic.ipynb`, `rollout_to_mp4.ipynb`)
+- `experiments/` holds dated experiment notebooks (e.g., `experiments/2026-03-09/latent_sope_5_rollouts.ipynb`)
 
 ## Results Lab Notebook
 
