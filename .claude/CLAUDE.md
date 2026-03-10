@@ -17,7 +17,8 @@ src/latent_sope/
     collect.py          # [Step 1] Batch offline data collection: collect_rollouts(), discover_obs_keys()
   eval/
     oracle.py           # [Step 0] Ground-truth V^pi: oracle_value(), save/load_oracle_result()
-    metrics.py          # L2 chunk reconstruction error
+    metrics.py          # L2 chunk reconstruction error, OPE eval (ope_eval → OPEResult)
+    reward_model.py     # [Step 6] Ground-truth reward (LiftRewardFn) + learned MLP fallback
   utils/
     common.py           # Logging (rich), config (hydra/omegaconf), video display, nnx save/load, wandb helpers
     misc.py             # Seeding, device resolution
@@ -48,77 +49,17 @@ third_party/
 
 ## Known Setup Bugs (found 2026-03-09)
 
-The README setup instructions have several gaps that will cause failures. See below.
-
-### Bug 1: `bootstrap_env.sh` installs Cython 3.x, which breaks `mujoco_py`
-
-`mujoco_py` compiles a Cython extension (`cymj.pyx`) on first import. Cython 3.x introduced
-`noexcept` enforcement that is incompatible with `mujoco_py`'s callback signatures. The
-bootstrap script does not pin Cython, so pip resolves Cython 3.x (pulled in transitively by
-numba or other deps), and `import mujoco_py` fails with:
-```
-Cannot assign type 'void (const char *) except * nogil' to 'void (*)(const char *) noexcept nogil'
-```
-
-**Fix:** Add `pip install "cython<3"` *after* all other installs in `bootstrap_env.sh` (must be
-last because `--force-reinstall` or transitive deps can pull Cython 3.x back).
-
-### Bug 2: `bootstrap_env.sh` is missing GLEW headers (`GL/glew.h`)
-
-Even after Cython compiles `cymj.pyx`, the C compilation step fails because `mujoco_py`'s
-`eglshim.c` includes `<GL/glew.h>`, which is not available on CARC nodes (no `glew-devel`
-system package). The bootstrap script does not install it.
-
-**Fix:** Add `conda install -c conda-forge glew mesalib mesa-libgl-cos7-x86_64 -y` to the
-bootstrap script.
-
-### Bug 3: `bootstrap_env.sh` is missing `patchelf`
-
-After Cython + C compilation succeeds, `mujoco_py`'s builder calls `patchelf --remove-rpath`
-on the built `.so`, but `patchelf` is not installed.
-
-**Fix:** Add `pip install patchelf` to the bootstrap script.
-
-### Bug 4: README `LD_LIBRARY_PATH` is missing `/usr/lib/nvidia`
-
-The README (step 4) says to add:
-```bash
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/.mujoco/mujoco210/bin
-```
-But `mujoco_py` also requires the NVIDIA library path. Without it, `mujoco_py` errors with:
-```
-Missing path to your environment variable ... Please add: export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia
-```
-
-**Fix:** The instruction should be:
-```bash
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/.mujoco/mujoco210/bin:/usr/lib/nvidia
-```
-
-### Bug 5: Jupyter kernel needs explicit env vars for `mujoco_py` + EGL
-
-When running the notebook via Jupyter, the kernel does not inherit the conda activate hooks
-(EGL vars) or the shell's `LD_LIBRARY_PATH`. This means `mujoco_py` fails to import and
-offscreen rendering breaks inside the notebook even if the terminal works fine.
-
-**Fix:** After `ipykernel install`, patch the kernel.json to include `env` with
-`LD_LIBRARY_PATH`, `C_INCLUDE_PATH`, `CPATH`, `MUJOCO_GL=egl`, `PYOPENGL_PLATFORM=egl`,
-and `PYTHONNOUSERSITE=1` (to avoid polluting with `~/.local` site-packages from a different
-Python version).
-
-### Bug 6 (environment-specific): `PYTHONNOUSERSITE` needed when multiple Python versions exist
-
-If the user has packages in `~/.local/lib/python3.11/site-packages` (from a base env or prior
-install), Python 3.10 in the conda env will still pick up 3.11 user-site packages due to how
-`site.py` works. This causes subtle import conflicts. `conda run` is particularly affected -
-it reports Python 3.11 even when the env has 3.10, because the user-site `site.py` takes over.
-
-**Fix:** Set `PYTHONNOUSERSITE=1` in scripts and kernel specs, or avoid `conda run` in favor
-of directly invoking the env's Python (`/path/to/envs/latent_sope/bin/python`).
+See `memory/setup_bugs.md` for full details. Summary of fixes needed for `bootstrap_env.sh`:
+1. Pin `cython<3` (after all other installs) — mujoco_py Cython 3.x incompatibility
+2. `conda install -c conda-forge glew mesalib mesa-libgl-cos7-x86_64 -y` — missing GLEW headers
+3. `pip install patchelf` — missing patchelf
+4. `LD_LIBRARY_PATH` must include both `~/.mujoco/mujoco210/bin` and `/usr/lib/nvidia`
+5. Jupyter kernel.json needs env vars: `LD_LIBRARY_PATH`, `MUJOCO_GL=egl`, `PYOPENGL_PLATFORM=egl`, `PYTHONNOUSERSITE=1`
+6. Always use `PYTHONNOUSERSITE=1` when running outside conda activate
 
 ## OPE Pipeline Progress
 
-The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3 are complete, Steps 4-7 need work.
+The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3, 5-7 are complete. Step 4 (guidance) skipped for MVP.
 
 ### Step 0: Ground Truth — DONE
 - `eval/oracle.py`: `oracle_value(ckpt, num_rollouts, horizon)` → `OracleResult`
@@ -159,7 +100,7 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3 are complet
 - **Full scale**: 200 rollouts + 100 epochs. Step 1 ≈ 50 min, Step 3 ≈ 30 min. Total ≈ 1.5 hr.
 - Oracle (Step 0) should also scale: K=50–100 for tighter estimate (~12–25 min).
 
-### Step 4: Policy Guidance — NEEDS BUILDING
+### Step 4: Policy Guidance — SKIPPED FOR MVP
 - SOPE's `GaussianDiffusion` has guidance via `gradlog_diffusion()` which calls `policy.grad_log_prob(state, action)`
 - Robomimic policies don't expose `grad_log_prob`. Need wrapper per policy type:
   - BC_Gaussian: extract mean/std → analytic Gaussian log-prob
@@ -167,33 +108,60 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3 are complet
   - DiffusionPolicyUNet: use diffusion score
 - `SopeDiffuser.sample()` passes `guided=self.cfg.guided` but ignores `guidance_hyperparams`
 - With LowDimConcatEncoder, latents=obs so policy can consume states directly
-- For MVP: skip guidance, sample unguided first
+- Currently skipped: sampling unguided first to validate pipeline end-to-end
 
-### Step 5: Stitching Loop — NEEDS BUILDING
-- `SopeDiffuser.sample()` generates single chunks but stitching loop is TODO (sope_diffuser.py:28)
-- Need to port `Diffuser.generate_full_trajectory()` from third_party/sope
-- Prototype exists in latent_sope.ipynb Step 5 cell (`stitch_trajectory_latent()`)
-- Sub-tasks: autoregressive conditioning, termination predicate, initial state sampling, end_indices tracking
-- Robomimic tasks use fixed horizon (no early termination), simplifying this
+### Step 5: Stitching Loop — DONE
+- `SopeDiffuser.generate_full_trajectory()` in `sope_diffuser.py` — fully implemented
+- Autoregressive chunk generation: condition chunk k+1 on last `frame_stack` states of chunk k
+- Conditioning always in **normalized space**; outputs stored **unnormalized**
+- Next chunk conditioning extracted from still-normalized diffusion sample (avoids round-trip error)
+- `apply_conditioning()` re-pins conditioned states after every denoising step
+- Fixed-horizon cutoff (no termination predicate needed for robomimic tasks)
+- `end_indices` tracking per-trajectory
+- Tested: generates (B, T, state_dim) states and (B, T, action_dim) actions
 
-### Step 6: Reward Estimation — NEEDS BUILDING
-- Option A (MVP): decode latents→obs via `LowDimConcatEncoder.decode_to_obs_dict()`, use env reward function
-- Option B: train MLP reward model R(z,a)→r on offline (latent, action, reward) tuples
-- Need discounted return computation: sum(gamma^t * r_t)
-- Nothing exists in src yet for this
+### Step 6: Reward Estimation — DONE (Ground-Truth)
+- **Decision: Use ground-truth analytical reward** (not learned MLP)
+- `LiftRewardFn` in `eval/reward_model.py`: checks `cube_z > table_height + 0.04` → reward 1.0 or 0.0
+- `score_trajectories_gt()`: decodes latents → obs dict via `LowDimConcatEncoder.decode_to_obs_dict()`, applies reward fn, computes discounted returns
+- Pure numpy, no training needed, zero approximation error
+- Learned MLP (`RewardMLP`, `train_reward_model`, `score_trajectories`) kept in same file as fallback
+- Tested end-to-end with stitched trajectories
 
-### Step 7: OPE Evaluation — NEEDS BUILDING
-- Compare OPE estimate to oracle value from Step 0
-- Metrics needed: MSE, Spearman rank correlation (across multiple policies), Regret@k
-- `eval/metrics.py` only has `l2_chunk_error()` currently
-- Need multi-policy evaluation harness
+#### Lift Reward Function Details
+- Robosuite Lift reward: sparse, `2.25 * reward_scale / 2.25 = 1.0` when cube lifted
+- Success condition: `cube_z > table_height + 0.04` where `table_height = 0.8` → threshold `0.84`
+- `object` obs key (10-dim): `[cube_pos(3), cube_quat(4), gripper_to_cube_pos(3)]`
+- Cube z-position is at **index 2** of the `object` key (index 2 of the 19-dim latent)
+- Resting cube height ≈ 0.8208m (on table surface)
 
-### Critical Path (MVP)
-1. Use LowDimConcatEncoder (latents = obs, keeps reward/guidance in obs space)
-2. Start unguided (skip Step 4)
-3. Build stitching loop (Step 5)
-4. Score with true reward via decoder (Step 6 Option A)
-5. Add guidance later once unguided pipeline works end-to-end
+#### Latent Vector Layout (LowDimConcatEncoder, sorted obs_keys)
+| Index | Key | Dim | Content |
+|-------|-----|-----|---------|
+| 0–9   | `object` | 10 | cube_pos(3) + cube_quat(4) + gripper_to_cube(3) |
+| 10–12 | `robot0_eef_pos` | 3 | end-effector XYZ |
+| 13–16 | `robot0_eef_quat` | 4 | end-effector quaternion |
+| 17–18 | `robot0_gripper_qpos` | 2 | gripper joint positions |
+
+#### How SOPE Does Reward Scoring (Reference)
+- SOPE uses **two options**: `reward_fn(env, state, action)` (analytical, env-specific) or learned `RewardEnsembleEstimator` (MLP `[64,64,1]`, MSE loss, 1000 iterations)
+- D4RL experiments always use learned model; Gym experiments use analytical when available
+- Analytical reward_fn in SOPE reconstructs MuJoCo state via `env.set_state(qpos, qvel)` then calls `env.step()`
+- Our approach is cleaner: directly check obs values without simulator, since Lift reward only depends on cube z-position
+- Learned model is kept as fallback for tasks with complex/unknown reward functions
+
+### Step 7: OPE Evaluation — DONE
+- `eval/metrics.py`: `ope_eval(oracle_value, synthetic_returns)` → `OPEResult`
+- `OPEResult` dataclass: `oracle_value`, `ope_estimate`, `mse`, `relative_error`, `ope_std`
+- Tested end-to-end
+- Multi-policy evaluation harness (Spearman rank correlation, Regret@k) not yet implemented
+
+### Next Steps
+1. **Signs-of-life run**: 50 rollouts (already collected in `rollout_latents_50/`) + 50 epochs
+   - Expect: generated states stay in-distribution (cube z near 0.82), OPE estimate in [0, 1]
+   - If noisy: scale to 200 rollouts + 100 epochs (~1.5 hr)
+2. Add policy guidance (Step 4) once unguided pipeline produces reasonable estimates
+3. Multi-policy evaluation harness for rank correlation
 
 ## Development Notes
 
@@ -204,6 +172,17 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3 are complet
 - Configs are frozen dataclasses: `SopeDiffusionConfig`, `RolloutChunkDatasetConfig`, `TrainingConfig`
 - `cross_validate_configs()` checks dimension alignment between dataset and diffusion configs
 - Test checkpoint: `third_party/robomimic/diffusion_policy_trained_models/test/20260309132349/`
+- Existing rollout data: `rollout_latents/` (5 rollouts), `rollout_latents_50/` (50 rollouts)
 - Conda env Python: `/home1/reishuen/miniconda3/envs/latent_sope/bin/python`
 - Always use `PYTHONNOUSERSITE=1` when running outside conda activate (avoids Python 3.11 site-packages conflicts)
 - `@timeit` decorator on `rollout()` is noisy for batch operations; `oracle.py` and `collect.py` suppress it by temporarily raising CONSOLE_LOGGER level
+
+## SOPE Reference Implementation (third_party/sope)
+
+Key files for understanding the reference implementation:
+- **Stitching loop**: `third_party/sope/opelab/core/baselines/diffuser.py:229–351` — `generate_full_trajectory()`
+- **Diffusion sampling**: `third_party/sope/opelab/core/baselines/diffusion/diffusion.py` — `GaussianDiffusion.conditional_sample()`, `p_sample_loop()`
+- **Conditioning**: `third_party/sope/opelab/core/baselines/diffusion/helpers.py:159–172` — `apply_conditioning()`
+- **Guidance**: `third_party/sope/opelab/core/baselines/diffusion/diffusion.py:31–110` — `gradlog()`, `gradlog_diffusion()`
+- **Reward model**: `third_party/sope/opelab/core/reward.py` — `RewardEnsembleEstimator`
+- **Eval harness**: `third_party/sope/opelab/examples/helpers.py:184–326` — `evaluate_policies()`
