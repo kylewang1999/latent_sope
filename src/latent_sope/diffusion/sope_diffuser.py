@@ -205,7 +205,7 @@ class SopeDiffuser:
 
     def sample(self, num_samples: int, cond=None, return_chain: bool = False, **kwargs):
         """Sample chunks from the diffusion model."""
-        shape = (num_samples, self.cfg.chunk_horizon+self.cfg.frame_stack-1, self.transition_dim)
+        shape = (num_samples, self.cfg.total_chunk_horizon, self.transition_dim)
         return self.diffusion.conditional_sample(
             shape,
             cond,
