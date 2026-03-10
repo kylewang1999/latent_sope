@@ -58,6 +58,104 @@ def l2_chunk_error(x_hat: np.ndarray, x_gt: np.ndarray) -> L2ChunkError:
     )
 
 
+# ─── Trajectory Reconstruction Metrics ───────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class TrajectoryReconstructionError:
+    """MSE between real and generated full-length trajectories."""
+
+    state_mse: float          # MSE over state dimensions
+    action_mse: float         # MSE over action dimensions
+    state_mse_per_dim: np.ndarray   # (state_dim,) per-feature MSE
+    action_mse_per_dim: np.ndarray  # (action_dim,) per-feature MSE
+    state_mse_per_step: np.ndarray  # (T,) MSE at each timestep (avg over batch & dims)
+    action_mse_per_step: np.ndarray # (T,) MSE at each timestep
+    num_trajectories: int
+    trajectory_length: int
+
+
+def trajectory_reconstruction_mse(
+    real_states: np.ndarray,
+    gen_states: np.ndarray,
+    real_actions: np.ndarray,
+    gen_actions: np.ndarray,
+    end_indices: Optional[np.ndarray] = None,
+) -> TrajectoryReconstructionError:
+    """Compute MSE between real and generated trajectories.
+
+    Compares generated (stitched) trajectories against the real offline
+    trajectories they were seeded from, to measure reconstruction quality.
+
+    Args:
+        real_states: (B, T, state_dim) real trajectory states.
+        gen_states: (B, T, state_dim) generated trajectory states.
+        real_actions: (B, T, action_dim) real trajectory actions.
+        gen_actions: (B, T, action_dim) generated trajectory actions.
+        end_indices: optional (B,) per-trajectory lengths. If provided,
+            only steps up to end_indices[i] are used for trajectory i.
+
+    Returns:
+        TrajectoryReconstructionError with aggregate and per-dim/per-step MSE.
+    """
+    real_states = np.asarray(real_states, dtype=np.float32)
+    gen_states = np.asarray(gen_states, dtype=np.float32)
+    real_actions = np.asarray(real_actions, dtype=np.float32)
+    gen_actions = np.asarray(gen_actions, dtype=np.float32)
+
+    if real_states.shape != gen_states.shape:
+        raise ValueError(
+            f"State shape mismatch: real={real_states.shape}, gen={gen_states.shape}"
+        )
+    if real_actions.shape != gen_actions.shape:
+        raise ValueError(
+            f"Action shape mismatch: real={real_actions.shape}, gen={gen_actions.shape}"
+        )
+
+    B, T, Ds = real_states.shape
+    Da = real_actions.shape[2]
+
+    if end_indices is not None:
+        end_indices = np.asarray(end_indices, dtype=np.int64)
+        # Build a mask: (B, T) where mask[i, t] = 1 if t < end_indices[i]
+        mask = np.arange(T)[None, :] < end_indices[:, None]  # (B, T)
+    else:
+        mask = np.ones((B, T), dtype=bool)
+
+    mask_expanded_s = mask[..., None]  # (B, T, 1)
+    mask_expanded_a = mask[..., None]
+
+    # Masked squared errors
+    state_sq_err = (real_states - gen_states) ** 2 * mask_expanded_s
+    action_sq_err = (real_actions - gen_actions) ** 2 * mask_expanded_a
+    n_valid = mask.sum()
+
+    # Aggregate MSE
+    state_mse = float(state_sq_err.sum() / (n_valid * Ds))
+    action_mse = float(action_sq_err.sum() / (n_valid * Da))
+
+    # Per-dimension MSE: average over batch and time (masked)
+    state_mse_per_dim = state_sq_err.sum(axis=(0, 1)) / n_valid  # (Ds,)
+    action_mse_per_dim = action_sq_err.sum(axis=(0, 1)) / n_valid  # (Da,)
+
+    # Per-step MSE: average over batch and dims (masked)
+    n_valid_per_step = mask.sum(axis=0)  # (T,)
+    n_valid_per_step = np.maximum(n_valid_per_step, 1)  # avoid div by zero
+    state_mse_per_step = state_sq_err.mean(axis=2).sum(axis=0) / n_valid_per_step  # (T,)
+    action_mse_per_step = action_sq_err.mean(axis=2).sum(axis=0) / n_valid_per_step  # (T,)
+
+    return TrajectoryReconstructionError(
+        state_mse=state_mse,
+        action_mse=action_mse,
+        state_mse_per_dim=state_mse_per_dim.astype(np.float32),
+        action_mse_per_dim=action_mse_per_dim.astype(np.float32),
+        state_mse_per_step=state_mse_per_step.astype(np.float32),
+        action_mse_per_step=action_mse_per_step.astype(np.float32),
+        num_trajectories=B,
+        trajectory_length=T,
+    )
+
+
 # ─── OPE Evaluation Metrics ──────────────────────────────────────────────────
 
 

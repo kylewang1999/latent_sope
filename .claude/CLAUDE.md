@@ -92,6 +92,13 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3, 5-7 are co
 - Only `source='latents'` works (`source='obs'` raises ValueError in train.py:108)
 - No validation loss / eval during training (not yet implemented)
 
+#### Step 3b: Chunk Reconstruction Sanity Check — DONE
+- After training, denoises a batch of real chunks through the full diffusion process
+- Computes L2 chunk error (states + actions) via `l2_chunk_error()`
+- **Visuals**: real vs reconstructed chunk overlay (5 chunks, key dims: obj_pos_z, eef_pos_x, eef_pos_z)
+- **Visuals**: per-dimension RMSE bar chart for states
+- Validates the model learned the chunk distribution before attempting stitching
+
 ### Current Scale & Scaling Plan
 - **Current notebook settings**: K=10 oracle rollouts, N_ROLLOUTS=5 offline, EPOCHS=5 training
 - Each rollout takes ~15s (Lift, horizon=60). Each ~60-step trajectory yields ~25 chunks (chunk_size=8, stride=2).
@@ -119,6 +126,18 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3, 5-7 are co
 - Fixed-horizon cutoff (no termination predicate needed for robomimic tasks)
 - `end_indices` tracking per-trajectory
 - Tested: generates (B, T, state_dim) states and (B, T, action_dim) actions
+
+#### Step 5b: Trajectory Quality Sanity Checks — DONE
+- `eval/metrics.py`: `trajectory_reconstruction_mse()` → `TrajectoryReconstructionError`
+- Comprehensive sanity check suite (8 checks) in both notebooks:
+  1. **Reconstruction MSE** — aggregate state/action MSE
+  2. **Visual trajectory comparison** — real (solid) vs synthetic (dashed) for key dims (cube z, eef z, cube x, eef x)
+  3. **Per-step MSE plot** — error accumulation over time (expect growth from autoregressive drift)
+  4. **Per-dimension MSE bar chart** — which state features the model reconstructs well/poorly
+  5. **Marginal statistics table** — mean/std/min/max per dimension (real vs synthetic)
+  6. **Success rate comparison** — real vs synthetic (cube z > 0.84 threshold)
+  7. **Cube z histogram** — marginal distribution overlay (real vs synthetic)
+- Supports `end_indices` masking for variable-length trajectories
 
 ### Step 6: Reward Estimation — DONE (Ground-Truth)
 - **Decision: Use ground-truth analytical reward** (not learned MLP)
@@ -154,14 +173,21 @@ The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3, 5-7 are co
 - `eval/metrics.py`: `ope_eval(oracle_value, synthetic_returns)` → `OPEResult`
 - `OPEResult` dataclass: `oracle_value`, `ope_estimate`, `mse`, `relative_error`, `ope_std`
 - Tested end-to-end
-- Multi-policy evaluation harness (Spearman rank correlation, Regret@k) not yet implemented
+- Multi-policy metrics added: `spearman_rank_correlation()`, `regret_at_k()`, `multi_policy_ope_eval()` → `MultiPolicyOPEResult`
+
+#### Step 7b: OPE Summary Visualization — DONE
+- 3-panel summary figure: (1) Oracle vs OPE bar chart with error bars, (2) histogram of synthetic returns with oracle/OPE lines, (3) text summary with all key metrics + sanity check results
 
 ### Next Steps
 1. **Signs-of-life run**: 50 rollouts (already collected in `rollout_latents_50/`) + 50 epochs
    - Expect: generated states stay in-distribution (cube z near 0.82), OPE estimate in [0, 1]
    - If noisy: scale to 200 rollouts + 100 epochs (~1.5 hr)
-2. Add policy guidance (Step 4) once unguided pipeline produces reasonable estimates
-3. Multi-policy evaluation harness for rank correlation
+2. **200-rollout full-scale run** (~2 hr total on current hardware: 2x P100, 20 CPU cores)
+   - Steps 0+1 dominate (~50 min each, serial MuJoCo rollouts)
+   - Build a parallel collection script (4-5 workers) to cut rollout time from ~100 min to ~25 min
+   - Training: 100 epochs on ~5000 chunks (~78 batches/epoch) ≈ 15 min
+   - Can reuse existing 50 rollouts and collect 150 more
+3. Add policy guidance (Step 4) once unguided pipeline produces reasonable estimates
 
 ## Development Notes
 
