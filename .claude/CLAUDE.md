@@ -23,7 +23,7 @@ src/latent_sope/
     common.py           # Logging (rich), config (hydra/omegaconf), video display, nnx save/load, wandb helpers
     misc.py             # Seeding, device resolution
 scripts/
-  latent_sope.ipynb     # Main pipeline notebook (Steps 0-7)
+  latent_sope_5_rollouts.ipynb   # Main pipeline notebook (Steps 0-7), 5 rollouts
   hello_robomimic.ipynb # Environment test notebook
   hello_stitch_ope.ipynb # SOPE demo on D4RL
 third_party/
@@ -59,7 +59,7 @@ See `memory/setup_bugs.md` for full details. Summary of fixes needed for `bootst
 
 ## OPE Pipeline Progress
 
-The pipeline is documented in `scripts/latent_sope.ipynb`. Steps 0-3, 5-7 are complete. Step 4 (guidance) skipped for MVP.
+The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts) and `scripts/latent_sope_50_rollouts.ipynb` (50 rollouts). Steps 0-3, 5-7 are complete. Step 4 (guidance) skipped for MVP.
 
 ### Step 0: Ground Truth — DONE
 - `eval/oracle.py`: `oracle_value(ckpt, num_rollouts, horizon)` → `OracleResult`
