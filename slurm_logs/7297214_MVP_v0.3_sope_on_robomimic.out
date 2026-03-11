@@ -1,0 +1,17 @@
+==========================================
+SLURM_JOB_ID = 7297214
+SLURM_JOB_NODELIST = d13-02
+TMPDIR = /tmp/SLURM_7297214
+==========================================
+=== SLURM Job Info ===
+Job ID:    7297214
+Node:      d13-02.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Notebook:  experiments/2026-03-10/MVP_v0.3_sope_on_robomimic.ipynb
+Started:   Tue Mar 10 21:24:15 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Using jupyter: /home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python
+
+=== DONE: Tue Mar 10 22:10:50 PDT 2026 ===
