@@ -126,9 +126,30 @@ The BC_Gaussian was trained on only 2,675 (state, action) pairs with a simple 2-
 ### Guidance gradient normalization is critical
 SOPE normalizes the guidance gradient to unit norm per-timestep. Without this, the raw gradient magnitude would vary wildly across denoising steps, making the `action_scale` hyperparameter impossible to tune consistently.
 
+## Critical Analysis: Does This Actually Prove Guidance Works?
+
+**No — this single-policy result does not prove guidance works.** The OPE estimate landing near the oracle (0.68 vs 0.54) could be a coincidence rather than evidence of correct policy-conditioned trajectory generation. Key concerns:
+
+### The result pattern looks like trajectory destruction, not proper guidance
+- The relationship is monotonic: more guidance = less success. There is no "sweet spot" where guided trajectories match the target policy's actual behavior pattern (54% success).
+- Scale=0.1 gives 10% success (undershooting the oracle's 54%), scales ≥ 1.0 give 0%. Guidance is progressively destroying trajectory quality, and scale=0.1 just happens to destroy it to a degree that produces an estimate near the oracle.
+- If we had swept finer scales, we'd likely find *some* scale that hits any desired success rate between 0% and 98% — this doesn't mean the pipeline is doing OPE correctly.
+
+### The BC_Gaussian proxy is too crude to provide meaningful guidance
+- Learned std ~0.82 across all action dims means the proxy is barely state-conditional. The gradient signal is mostly pushing actions toward a fixed mean rather than capturing the target policy's actual state-dependent behavior.
+- A good guidance signal should make trajectories *look like* what the target policy actually does, not just degrade them.
+
+### What would constitute real evidence
+1. **Multi-policy ranking (strongest test):** Evaluate multiple target policies of varying quality. If guided OPE correctly *ranks* policies (Spearman ρ ≈ 1), that's much harder to achieve by coincidence than one estimate being close.
+2. **Guided success rate ≈ oracle success rate:** Guided synthetic trajectories should match the target policy's 54% success, not just be "lower than unguided."
+3. **Qualitative trajectory match:** Guided trajectories should resemble the target policy's actual rollout patterns, not just look like degraded expert demos.
+
+### Implication for v0.3
+This analysis motivates v0.3's multi-policy evaluation as the critical next experiment. One close estimate proves nothing; correct ranking across policies of varying quality would be strong evidence.
+
 ## Next Steps
 
+- **v0.3 (critical)**: Multiple target policies of varying quality → test ranking (Spearman ρ, regret@1). This is the real test of whether guidance works.
 - **Finer guidance scale sweep**: Try 0.01, 0.03, 0.05, 0.1, 0.2, 0.5 to find optimal scale
 - **Better BC proxy**: More training epochs, larger model, or GMM to better capture target policy
 - **Adaptive guidance scheduling**: SOPE supports cosine/linear schedules for guidance strength over denoising steps (see `get_schedule_multiplier()`)
-- **v0.3**: Multiple target policies of varying quality → test ranking (Spearman ρ, regret@1)
