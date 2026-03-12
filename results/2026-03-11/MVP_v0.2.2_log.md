@@ -132,13 +132,23 @@ v0.2's success was likely an artifact of evaluating a ~0% success BC_Gaussian ta
 
 ---
 
+## SLURM Execution
+
+**SLURM Job:** 7326959 (node d14-06, V100-PCIE-32GB)
+**Started:** Wed Mar 11 13:40:14 PDT 2026
+**Finished:** Wed Mar 11 13:48:31 PDT 2026 (~8 min)
+**Status:** Completed successfully — notebook executed and saved in-place.
+
 ## Artifacts
 
 - **Results JSON:** `results/2026-03-11/mvp_v022_results.json`
 - **OPE summary plot:** `results/2026-03-11/ope_summary_mvp_v022.png`
 - **Training loss plot:** `results/2026-03-11/training_loss_v022.png`
+- **Trajectory plots:** `results/2026-03-11/traj_states_v022.png`, `traj_actions_v022.png`, `traj_cubez_all_scales_v022.png`
+- **Marginal stats:** `results/2026-03-11/marginal_stats_v022.png`
+- **Return histograms:** `results/2026-03-11/return_histograms_v022.png`
+- **Rollout data:** `results/2026-03-11/rollouts_mvp_v022/`
 - **Diffusion checkpoint:** `diffusion_ckpts/mvp_v022_fulldim/`
-- **Rollouts:** Not saved (notebook state lost; add save cell for next run)
 
 ---
 

@@ -69,21 +69,46 @@ cd ~/latent_sope && bash scripts/train_target_policies/train_all.sbatch 10    # 
 
 **Estimated time:** ~6 min per policy, ~30 min total for all 5.
 
-## Results
+## Training Results
 
-_To be filled in after training completes._
+**SLURM Job:** 7326750 (node d14-06, V100-PCIE-32GB)
+**Started:** Wed Mar 11 13:40:14 PDT 2026
+**Finished:** Wed Mar 11 14:24:42 PDT 2026 (~45 min total)
 
-| Policy | Best Epoch | Success Rate | Oracle V^π | Notes |
-|--------|-----------|--------------|------------|-------|
-| 10 demos  | | | | |
-| 25 demos  | | | | |
-| 50 demos  | | | | |
-| 100 demos | | | | |
-| 200 demos | | | | |
+| Policy | Final Loss (Epoch 40) | Duration | Checkpoint | Notes |
+|--------|----------------------|----------|------------|-------|
+| 10 demos  | — | — | `20260311115828` | Trained separately earlier (pre-SLURM run) |
+| 25 demos  | **FAILED** | ~1 min | None | `EOFError: EOF when reading a line` — likely missing filter key or data issue |
+| 50 demos  | 0.0298 | ~14 min | `20260311134204` | Loss converged smoothly |
+| 100 demos | 0.0335 | ~15 min | `20260311135551` | Loss converged smoothly |
+| 200 demos | 0.0349 | ~14 min | `20260311141036` | Loss converged smoothly |
+
+### Loss Trajectories (Epoch 1 → 40)
+
+| Epoch | 50 demos | 100 demos | 200 demos |
+|-------|----------|-----------|-----------|
+| 1     | 0.956    | 0.957     | 0.956     |
+| 5     | 0.086    | 0.085     | 0.088     |
+| 10    | 0.053    | 0.053     | 0.055     |
+| 20    | 0.040    | 0.043     | 0.043     |
+| 30    | 0.034    | 0.037     | 0.038     |
+| 40    | 0.030    | 0.033     | 0.035     |
+
+### Notes
+
+- 25 demos crashed immediately with `EOFError` — likely the filter key was not properly written to the HDF5 file. Needs investigation.
+- All other policies have similar initial loss (~0.956) but final loss slightly increases with more data (0.030 → 0.035), which is expected — more diverse demos are harder to fit.
+- Memory usage stable at ~1880 MB throughout.
+- 10 demos was trained in a separate earlier run (timestamp `20260311115828`), not part of this SLURM job.
+
+### Oracle evaluation still needed
+
+Success rates and oracle V^π values are **not yet computed** — need to run `oracle_value()` on each checkpoint (50 rollouts each).
 
 ## Next Steps
 
-1. After training: run oracle evaluation (50 rollouts each) to get ground-truth V^π
-2. Collect behavior data: 200 rollouts from the 200-demo policy
-3. Run stitch-OPE on each target policy
-4. Evaluate: Spearman rank correlation, per-policy relative error, regret@k
+1. **Fix 25 demos filter key** — check if `25_demos` key exists in the HDF5 file, re-create if needed, retrain
+2. Run oracle evaluation (50 rollouts each) to get ground-truth V^π for all policies
+3. Collect behavior data: 200 rollouts from the 200-demo policy
+4. Run stitch-OPE on each target policy
+5. Evaluate: Spearman rank correlation, per-policy relative error, regret@k

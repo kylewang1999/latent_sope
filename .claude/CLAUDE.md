@@ -109,7 +109,7 @@ The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts
 - **Full scale**: 200 rollouts + 100 epochs. Step 1 ≈ 50 min, Step 3 ≈ 30 min. Total ≈ 1.5 hr.
 - Oracle (Step 0) should also scale: K=50–100 for tighter estimate (~12–25 min).
 
-### Step 4: Policy Guidance — SKIPPED FOR MVP
+### Step 4: Policy Guidance — IN PROGRESS (fixing)
 - SOPE's `GaussianDiffusion` has guidance via `gradlog_diffusion()` which calls `policy.grad_log_prob(state, action)`
 - Robomimic policies don't expose `grad_log_prob`. Need wrapper per policy type:
   - BC_Gaussian: extract mean/std → analytic Gaussian log-prob
@@ -117,7 +117,7 @@ The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts
   - DiffusionPolicyUNet: use diffusion score
 - `SopeDiffuser.sample()` passes `guided=self.cfg.guided` but ignores `guidance_hyperparams`
 - With LowDimConcatEncoder, latents=obs so policy can consume states directly
-- Currently skipped: sampling unguided first to validate pipeline end-to-end
+- Currently working on fixing diffusion guidance integration
 
 ### Step 5: Stitching Loop — DONE
 - `SopeDiffuser.generate_full_trajectory()` in `sope_diffuser.py` — fully implemented
@@ -189,7 +189,7 @@ The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts
    - Build a parallel collection script (4-5 workers) to cut rollout time from ~100 min to ~25 min
    - Training: 100 epochs on ~5000 chunks (~78 batches/epoch) ≈ 15 min
    - Can reuse existing 50 rollouts and collect 150 more
-3. Add policy guidance (Step 4) once unguided pipeline produces reasonable estimates
+3. **Fix policy guidance (Step 4)** — currently in progress
 
 ## Experiments
 
@@ -202,9 +202,8 @@ The `experiments/` directory stores experiment notebooks, organized by date (`YY
 
 The `results/` directory serves as a lab notebook. When the user asks to log or record results:
 - Create a subfolder named by date: `results/YYYY-MM-DD/`
-- Save experiment outputs (figures, metrics, notes) into the date folder
+- **Only write markdown (.md) files** — do NOT save PNGs, JSONs, or other binary/data files into `results/`. Figures and data stay in the notebook.
 - If multiple experiments run on the same day, they go in the same date folder
-- Use descriptive filenames (e.g., `ope_summary_50rollouts.png`, `notes.md`)
 - Update this section or add a `results/YYYY-MM-DD/notes.md` with observations when asked
 
 ## Running Overnight Experiments (SLURM)
