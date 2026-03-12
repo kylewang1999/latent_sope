@@ -1,0 +1,15 @@
+==========================================
+SLURM_JOB_ID = 7337788
+SLURM_JOB_NODELIST = d13-04
+TMPDIR = /tmp/SLURM_7337788
+==========================================
+=== SLURM Job Info ===
+Job ID:    7337788
+Node:      d13-04.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Notebook:  experiments/2026-03-12/oracle_eval_all_checkpoints.ipynb
+Started:   Thu Mar 12 10:56:43 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Using jupyter: /home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python

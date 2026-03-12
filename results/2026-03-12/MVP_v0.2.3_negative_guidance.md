@@ -127,10 +127,125 @@ guide = nabla_a log pi(a|s) - ratio * nabla_a log beta(a|s)
 
 ### Key Takeaway
 
-The diffusion score function `−ε(a, t=1, s)/σ₁` does not provide usable policy gradients for SOPE-style guidance in this setting. The signal-to-noise ratio is too low. Future work should:
-- Return to BC_Gaussian analytical gradients (v0.2 approach) as the baseline
-- Investigate whether the score at different timesteps (t > 1) gives stronger gradients
-- Consider whether the chunk-level diffusion framework is incompatible with single-step action scores
+The diffusion score function `−ε(a, t=1, s)/σ₁` does not provide usable policy gradients for SOPE-style guidance in this setting. The signal-to-noise ratio is too low.
+
+---
+
+## Root Cause Analysis (Post-Mortem)
+
+Comparing our setup with SOPE's actual diffusion policy experiments (in `main_diffusion.py` and `opelab/examples/diffusion_policy/config/`) reveals **three critical differences** that likely explain why guidance has zero effect:
+
+### 1. Chunk diffuser trained on expert data (ours) vs medium data (SOPE)
+
+**This is the #1 issue.** SOPE trains its chunk diffuser on D4RL medium-quality offline data — mixed trajectories with moderate success rates. The prior is broad and guidance only needs to make small adjustments between policies of similar quality.
+
+Our chunk diffuser is trained on **expert rollouts** (98% SR). The prior is extremely concentrated on high-quality trajectories. Guidance would need to drag the distribution from 98% SR down to 54% SR — a massive shift that no reasonable gradient signal can accomplish within 256 denoising steps.
+
+**Lesson:** Guidance is designed for fine-tuning, not large distribution shifts. The chunk diffuser's training data determines the "center" of the distribution, and guidance nudges samples within that distribution. Training on expert data and guiding toward 54% SR is like using classifier guidance to turn a cat into a truck.
+
+### 2. Wrong guidance settings — v0.2.3 doesn't match SOPE's diffusion policy config
+
+SOPE uses **different hyperparameters** for diffusion target policies vs SAC policies:
+
+| Setting | SOPE (diffusion target) | Our v0.2.3 |
+|---------|------------------------|------------|
+| clamp | **false** | true ([-1,1]) — kills gradients |
+| k_guide | **1** | 2 |
+| use_adaptive | **false** | true (cosine) — attenuates early steps |
+| action_scale | 0.05–0.5 (task-specific) | 0.05–1.0 (swept) |
+| ratio | 0.25–0.5 | 0.25–1.0 (swept) |
+
+Clamping to [-1,1] and adaptive cosine scaling both **reduce** guidance strength. SOPE explicitly disables these for diffusion policies (while enabling clamp=true for SAC policies), suggesting diffusion scores are already well-behaved and don't need dampening.
+
+### 3. Behavior policy type mismatch
+
+SOPE uses **D4RLPolicy (Gaussian MLP from dataset metadata)** as the behavior policy for negative guidance — even when the target policy is a diffusion model (`main_diffusion.py` line 49: `behavior_policy = D4RLPolicy(env_name).to(device)`). We trained a separate **diffusion behavior policy** (ActionDenoiser MLP DDPM, 1000 epochs).
+
+SOPE's behavior policy has an analytical gradient path: MLP forward → mean/std → Gaussian log-prob → autograd. Our diffusion behavior policy uses the same t=1 score trick, meaning both the positive and negative terms use noisy score approximations. The two noisy signals may partially cancel or produce incoherent gradients.
+
+---
+
+## Proposed Next Steps (v0.2.4)
+
+Ordered by expected impact and effort. Each is an independent hypothesis.
+
+### Experiment A: Train chunk diffuser on target policy data (HIGH impact, MODERATE effort)
+
+**Hypothesis:** If the chunk diffuser's prior is closer to the target policy's trajectory distribution, guidance only needs fine adjustments.
+
+- Collect 50–200 rollouts from the target policy (54% SR diffusion policy)
+- Train chunk diffuser on this data instead of expert data
+- Unguided stitching should already produce OPE closer to 0.54
+- Then apply guidance to fine-tune
+
+This is exactly what SOPE does — their chunk diffuser is trained on D4RL-medium (the behavior data), not expert data.
+
+**Tradeoff:** If target policy data is too narrow (all ~54% SR), the diffuser may overfit. Could mix with expert data (50/50) to keep diversity.
+
+### Experiment B: Fix guidance hyperparameters to match SOPE (HIGH impact, LOW effort)
+
+**Hypothesis:** Clamping and adaptive scaling are killing the gradient signal.
+
+- Set `clamp=false`, `use_adaptive=false`, `k_guide=1` (match SOPE diffusion policy config)
+- Re-run scale/ratio sweep with corrected settings
+
+SOPE explicitly disables clamping for diffusion policies. Our clamping to [-1,1] after L2 normalization may be truncating already-weak diffusion score gradients to near-zero.
+
+### Experiment C: Use Gaussian behavior policy for negative guidance (MODERATE impact, LOW effort)
+
+**Hypothesis:** Negative guidance should use a clean analytical gradient (Gaussian MLP), not a noisy diffusion score. Two noisy scores cancel incoherently.
+
+- Reuse BC_Gaussian from v0.2 as behavior policy for negative guidance
+- Keep diffusion score for positive (target) term
+- This matches SOPE's actual setup: diffusion target + Gaussian behavior
+
+### Experiment D: Much larger guidance scales (MODERATE impact, LOW effort)
+
+**Hypothesis:** With the expert-biased prior, we need 10–100x larger scales than SOPE uses.
+
+- Sweep action_scale = [5, 10, 20, 50, 100] with clamp=false
+- SOPE uses 0.05–0.5 because their prior is much weaker
+
+**Risk:** If gradient direction is wrong (noisy score), amplifying it just amplifies noise. Run after Experiment B.
+
+### Experiment E: Score at multiple/higher diffusion timesteps (LOW impact, MODERATE effort)
+
+**Hypothesis:** Score at t=1 may be too sharp/noisy for multimodal diffusion policies. Higher t gives smoother gradients.
+
+- Try t=5, t=10, t=20 (out of 100 behavior policy steps / 32 target policy steps)
+- Or average scores across t=[1,2,3,5]
+
+SOPE only uses t=1. Speculative, but worth exploring if other fixes don't fully resolve.
+
+### Experiment F: Guide only at late denoising steps (LOW impact, LOW effort)
+
+**Hypothesis:** Guidance applied early (high noise) gets overwritten by subsequent denoising. Late-step guidance sticks.
+
+- Apply guidance only for the last N denoising steps (e.g., last 50 of 256)
+
+SOPE guides at all steps, but their weaker prior means early guidance isn't fighting a strong attractor.
+
+### Experiment G: SMC / importance resampling (MODERATE impact, HIGH effort)
+
+**Hypothesis:** Instead of gradient guidance, generate many unguided candidates and resample by policy likelihood.
+
+- Generate B=256+ candidate chunks (unguided)
+- Score each under target diffusion policy
+- Resample proportional to policy score
+
+Sidesteps the gradient magnitude problem entirely. Fallback if gradient guidance can't work with expert prior.
+
+### Recommended Order
+
+1. **B** (fix hyperparameters) — quick, removes known bugs
+2. **C** (Gaussian behavior policy) — matches SOPE's actual setup
+3. **A** (train on target data) — addresses root cause, most likely to work
+4. **D** (larger scales) — cheap to try after B
+5. **E** (multi-timestep scores) — speculative
+6. **F** (late-step guidance) — easy to try alongside others
+7. **G** (SMC resampling) — fallback, different paradigm
+
+**Best first experiment:** B + C together (fix hyperparameters + Gaussian behavior policy). Minimal code changes, aligns with SOPE's actual diffusion policy setup. If the prior is still too strong, then A (retrain chunk diffuser) is the real fix.
 
 ### Output Files
 
