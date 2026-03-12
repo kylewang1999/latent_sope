@@ -1,0 +1,112 @@
+[NbConvertApp] Converting notebook /home1/reishuen/latent_sope/experiments/2026-03-12/MVP_v0.2.4_target_data_diffuser.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Training loop ──
+print(f"Training chunk diffuser for {TRAIN_EPOCHS} epochs on {len(train_x_t)} target policy chunks...")
+t0_train = time.time()
+
+diffusion_model.train()
+epoch_losses = []
+all_losses = []
+
+for epoch in range(1, TRAIN_EPOCHS + 1):
+    # Shuffle
+    perm = torch.randperm(len(train_x_t), device=device)
+    ep_loss = []
+    
+    for start in range(0, len(train_x_t) - BATCH_SIZE + 1, BATCH_SIZE):
+        idx = perm[start : start + BATCH_SIZE]
+        x_batch = train_x_t[idx]       # (B, chunk_size, transition_dim)
+        c_batch = train_cond_t[idx]     # (B, state_dim)
+        
+        # Normalize
+        x_norm = normalize_fn(x_batch)
+        c_norm = normalize_fn(
+            torch.cat([c_batch, torch.zeros(BATCH_SIZE, ACTION_DIM, device=device)], dim=-1)
+        )[:, :STATE_DIM]
+        
+        # Conditioning: pin first state
+        cond = {0: c_norm}
+        
+        # Compute loss
+        loss, _ = diffusion_model.loss(x_norm, cond)
+        
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(diffusion_model.parameters(), GRAD_CLIP)
+        optimizer.step()
+        ema.update_model_average(ema.ema_model, diffusion_model)
+        
+        ep_loss.append(loss.item())
+        all_losses.append(loss.item())
+    
+    mean_loss = np.mean(ep_loss)
+    epoch_losses.append(mean_loss)
+    
+    if epoch % 5 == 0 or epoch == 1:
+        print(f"  Epoch {epoch:3d}/{TRAIN_EPOCHS}: loss={mean_loss:.6f}")
+
+elapsed_train = time.time() - t0_train
+print(f"\nTraining complete: {elapsed_train:.0f}s")
+print(f"Final epoch loss: {epoch_losses[-1]:.6f}")
+
+# Save checkpoint
+torch.save(diffusion_model.state_dict(), DIFFUSION_SAVE_DIR / "diffusion_model.pt")
+torch.save(ema.ema_model.state_dict(), DIFFUSION_SAVE_DIR / "diffusion_model_ema.pt")
+print(f"Checkpoint saved to {DIFFUSION_SAVE_DIR}")
+------------------
+
+----- stdout -----
+Training chunk diffuser for 50 epochs on 1230 target policy chunks...
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mAttributeError[0m                            Traceback (most recent call last)
+Cell [0;32mIn[8], line 35[0m
+[1;32m     33[0m torch[38;5;241m.[39mnn[38;5;241m.[39mutils[38;5;241m.[39mclip_grad_norm_(diffusion_model[38;5;241m.[39mparameters(), GRAD_CLIP)
+[1;32m     34[0m optimizer[38;5;241m.[39mstep()
+[0;32m---> 35[0m [43mema[49m[38;5;241;43m.[39;49m[43mupdate_model_average[49m(ema[38;5;241m.[39mema_model, diffusion_model)
+[1;32m     37[0m ep_loss[38;5;241m.[39mappend(loss[38;5;241m.[39mitem())
+[1;32m     38[0m all_losses[38;5;241m.[39mappend(loss[38;5;241m.[39mitem())
+
+[0;31mAttributeError[0m: 'EMA' object has no attribute 'update_model_average'
+

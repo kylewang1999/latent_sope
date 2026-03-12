@@ -10,3 +10,6 @@ logs*/
 *datasets/
 
 *.hdf5
+
+rollouts/
+diffusion_ckpts/

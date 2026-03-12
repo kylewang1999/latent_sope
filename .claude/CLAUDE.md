@@ -197,14 +197,20 @@ The `experiments/` directory stores experiment notebooks, organized by date (`YY
 
 - `scripts/` holds reusable utility notebooks (e.g., `hello_robomimic.ipynb`, `rollout_to_mp4.ipynb`)
 - `experiments/` holds dated experiment notebooks (e.g., `experiments/2026-03-09/latent_sope_5_rollouts.ipynb`)
+- **Output rule:** Notebooks should display all figures and results inline (plt.show(), print). Do NOT save PNGs, JSONs, or other output files — all outputs live inside the executed notebook itself.
+- **Visual debugging:** Every experiment notebook must include plots of actual trajectories (real vs synthetic, per key dimension like cube_z, eef_z, etc.) so the user can visually inspect and debug trajectory quality.
+- **Persistence rule:** Always save trajectory rollouts (e.g., .h5/.npz) to `rollouts/` and trained model checkpoints (e.g., .pt) to `diffusion_ckpts/`. These are expensive to regenerate and should be reusable across experiments. Both directories are gitignored.
+- **Pre-submit check:** Before submitting a notebook to SLURM, rigorously verify it won't crash: check all imports resolve, API calls match actual method signatures (e.g., EMA.update vs update_model_average), file paths exist, shapes align, and configs are consistent. SLURM jobs waste GPU hours and queue time when they fail.
 
 ## Results Lab Notebook
 
-The `results/` directory serves as a lab notebook. When the user asks to log or record results:
+The `results/` directory serves as a lab notebook. **Every experiment must have results logged here** — this is not optional.
 - Create a subfolder named by date: `results/YYYY-MM-DD/`
 - **Only write markdown (.md) files** — do NOT save PNGs, JSONs, or other binary/data files into `results/`. Figures and data stay in the notebook.
 - If multiple experiments run on the same day, they go in the same date folder
-- Update this section or add a `results/YYYY-MM-DD/notes.md` with observations when asked
+- After each experiment run, write a results markdown that includes: what was tried, key metrics (OPE estimate, relative error, success rates), comparison to prior experiments, and analysis of what worked/didn't and why
+- Use these results logs to inform the next experiment — always review prior results before designing a new run
+- **SLURM jobs too:** When a SLURM job completes, check its output and log results the same way. Read the executed notebook outputs and write the results markdown — don't skip logging just because it ran on a cluster node.
 
 ## Running Overnight Experiments (SLURM)
 
