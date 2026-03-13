@@ -1,0 +1,15 @@
+==========================================
+SLURM_JOB_ID = 7362895
+SLURM_JOB_NODELIST = d13-03
+TMPDIR = /tmp/SLURM_7362895
+==========================================
+=== SLURM Job Info ===
+Job ID:    7362895
+Node:      d13-03.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Notebook:  experiments/2026-03-12/MVP_v0.3.2.1_shared_diffuser_rerun.ipynb
+Started:   Thu Mar 12 18:02:59 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Using jupyter: /home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python
