@@ -259,6 +259,33 @@ class RolloutLatentRecorder:
         self._infos.append(OrderedDict() if info is None else \
                            OrderedDict(sorted(info.items(), key=lambda kv: kv[0])))
 
+    def record_terminal_obs(self, obs: Dict[str, Any]) -> None:
+        """Record the terminal observation after done/success.
+
+        The main loop records pre-step obs, so the post-step next_obs on the
+        final transition is never stored.  This method appends that terminal
+        observation (and its latent encoding) so that downstream consumers
+        (e.g. the chunk diffuser) can see the success state.
+
+        A zero-action and zero-reward sentinel are appended alongside the obs
+        so that all per-step arrays stay the same length.
+        """
+        if self.store_obs:
+            for k in self.obs_keys or []:
+                self._obs[k].append(np.asarray(obs[k]))
+
+        if self.feature_hook is not None:
+            self.feature_hook.ensure_feature(obs)
+            z = self.feature_hook.pull_feat(clear=True)
+            self._z.append(np.asarray(z))
+
+        # Sentinel action/reward/done to keep arrays aligned
+        action_dim = self._actions[-1].shape[-1] if self._actions else 7
+        self._actions.append(np.zeros(action_dim, dtype=np.float32))
+        self._rewards.append(0.0)
+        self._dones.append(True)
+        self._infos.append(OrderedDict())
+
     def finalize(
         self,
         stats: RolloutStats,
@@ -493,6 +520,11 @@ def rollout(
                 )
 
             if done or success:
+                # Record the terminal next_obs so the success state is captured.
+                # Without this, the final observation (e.g. cube_z > 0.84 on
+                # successful lift) is lost because we only record pre-step obs.
+                if recorder is not None:
+                    recorder.record_terminal_obs(next_obs)
                 break
 
             obs = deepcopy(next_obs)
