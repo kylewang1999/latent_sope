@@ -95,3 +95,78 @@ have much lower MSE (~0.0001–0.001).
 - This experiment shows that even the "best" guidance config for OPE (which
   minimizes relative error to oracle) may not produce the most realistic
   trajectories. MSE and OPE accuracy are different objectives.
+
+## Post-Hoc Analysis: The MSE Comparison Is Fundamentally Broken
+
+After reviewing the outputs, we identified that the trajectory MSE results above
+are **not interpretable as intended** due to the rollout recording bug.
+
+### The problem
+
+Real target SR = 0% because the rollout recorder never stores the final success
+state (cube_z > 0.84). So the MSE is measured against **truncated/broken**
+reference trajectories that never show a successful lift. This inverts the
+interpretation:
+
+- **Lower MSE = closer to the broken data**, not closer to the true target behavior
+- The "best MSE" config (`pos_only_0.1`, MSE=0.005) has only 24% SR — it's
+  matching trajectories that never lift the cube
+- **Unguided** has the highest SR (60%, closest to oracle 54%) but higher MSE
+  because it *correctly* lifts the cube, diverging from the broken reference
+
+### Guidance is suppressing success, not steering toward it
+
+| Config type | Effect on SR | Effect on MSE | Interpretation |
+|-------------|-------------|---------------|----------------|
+| pos_only (target grad only) | 60% → 24–38% | Decreases | Pushes toward broken reference |
+| full (target − ratio×behavior) | 60% → 28–68% | Increases | Partially recovers lifting via negative term |
+| Strong full (0.5_r0.5) | 60% → 26% | 6.5x increase | Destabilizes trajectories entirely |
+
+The target scorer gradients appear to be **suppressing** the lifting behavior
+rather than reinforcing it. This needs to be debugged before guidance can be
+meaningfully evaluated.
+
+### Why we can't visualize "guidance steering" from this experiment
+
+1. **No separate behavior-only baseline.** The diffuser trains on target+expert
+   data, so unguided output is already a mix. There's no "pure behavior policy"
+   trajectory to steer *from*.
+2. **Broken reference trajectories.** Without correct target rollouts (recording
+   bug fixed), trajectory MSE measures similarity to the wrong thing.
+3. **Guidance hurts rather than helps.** The target scorer gradients reduce SR,
+   so there's no positive steering effect to visualize.
+
+## Next Steps: Debug the Target Scorer Gradients
+
+Before re-running guidance experiments, the `RobomimicDiffusionScorer` gradients
+must be validated. Concrete debugging plan:
+
+### 1. Sanity check: does the scorer prefer the policy's own actions?
+
+Take a state from a real rollout. Compute `grad_log_prob` at:
+- The action the target policy actually took → gradient should be small (near mode)
+- A random action → gradient should be large and point toward the real action
+- Test: does `a_rand + lr * grad_rand` move closer to `a_real`?
+
+### 2. Check gradient magnitudes vs action scale
+
+Compare `|grad|` to `|action|`. If the gradient norm is orders of magnitude
+larger than action magnitudes, the `action_scale` configs (0.05–0.5) may be
+way too large, causing the guidance to overpower the diffusion model.
+
+### 3. Check sigma at score_timestep=1
+
+The scorer divides by `sigma = sqrt(1 - alpha_bar[1])`. If sigma ≈ 0 at t=1,
+gradients are amplified massively. Print `target_scorer.sigma` to verify.
+
+### 4. Visualize gradient field on a real trajectory
+
+Plot the gradient vector at each timestep of a real trajectory. If gradients
+are smooth and coherent, the scorer is at least internally consistent. If
+spiky/noisy, the score extraction is unreliable.
+
+### 5. Check frame-stacking alignment
+
+Verify `observation_horizon`, `prediction_horizon`, `action_start` against
+`CHUNK_SIZE=4`. If most UNet positions correspond to padding rather than real
+chunk actions, the scores at chunk positions may be garbage.

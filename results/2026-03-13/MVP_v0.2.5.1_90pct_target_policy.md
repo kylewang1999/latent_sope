@@ -41,6 +41,10 @@ Can positive guidance steer a 76% unguided synthetic SR toward the 90% target po
 - High negative guidance ratio (0.5) is catastrophic (0–8% SR), consistent with v0.3.2 findings.
 - The unguided diffuser naturally produces 76% SR, biased upward by the expert demos in the training mix.
 
+## Bugs
+
+- **Diffuser/behavior data mismatch**: diffuser trained on 54% SR + 200 expert demos, but BC behavior policy trained on 54% SR data only. SOPE assumes these match.
+
 ## Why guidance fails
 
 1. **Score magnitude mismatch**: the 200demos_epoch40 diffusion scorer has different score magnitudes than the 54% SR policy the BC was trained on, so the guidance ratio is miscalibrated.

@@ -1,0 +1,370 @@
+==========================================
+SLURM_JOB_ID = 7368312
+SLURM_JOB_NODELIST = d13-07
+TMPDIR = /tmp/SLURM_7368312
+==========================================
+=== SLURM Job Info ===
+Job ID:    7368312
+Node:      d13-07.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Started:   Thu Mar 12 19:30:55 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python
+======================================================================
+Collecting 100 rollouts for 8 policies
+Device: cuda
+======================================================================
+
+
+[50demos_epoch10] Have 20, need 80 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[19:31:39] INFO     build_rollout_policy_from_checkpoint took 0.95 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+[19:31:46] INFO     build_env_from_checkpoint took 7.40 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [8/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [16/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [24/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [32/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [40/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [48/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [56/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [64/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [72/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [80/80] reward=0.0, success=0%, latents=(60, 2, 19)
+[50demos_epoch10] Done: 80 rollouts, 673s (8.4s/rollout)
+
+[10demos_epoch10] Have 0, need 100 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[19:42:50] INFO     build_rollout_policy_from_checkpoint took 0.85 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+           INFO     build_env_from_checkpoint took 0.44 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [10/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [20/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [30/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [40/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [50/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [60/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [70/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [80/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [90/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [100/100] reward=0.0, success=0%, latents=(60, 2, 19)
+[10demos_epoch10] Done: 100 rollouts, 831s (8.3s/rollout)
+
+[200demos_epoch10] Have 20, need 80 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[19:56:36] INFO     build_rollout_policy_from_checkpoint took 0.85 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+           INFO     build_env_from_checkpoint took 0.34 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [8/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [16/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [24/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [32/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [40/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [48/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [56/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [64/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [72/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [80/80] reward=0.0, success=0%, latents=(60, 2, 19)
+[200demos_epoch10] Done: 80 rollouts, 659s (8.2s/rollout)
+
+[100demos_epoch20] Have 0, need 100 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[20:07:34] INFO     build_rollout_policy_from_checkpoint took 0.85 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+[20:07:35] INFO     build_env_from_checkpoint took 0.47 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [10/100] reward=1.0, success=100%, latents=(46, 2, 19)
+  [20/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [30/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [40/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [50/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [60/100] reward=1.0, success=100%, latents=(43, 2, 19)
+  [70/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [80/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [90/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [100/100] reward=1.0, success=100%, latents=(55, 2, 19)
+[100demos_epoch20] Done: 100 rollouts, 758s (7.6s/rollout)
+
+[10demos_epoch20] Have 20, need 80 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[20:20:14] INFO     build_rollout_policy_from_checkpoint took 0.79 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+           INFO     build_env_from_checkpoint took 0.35 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [8/80] reward=1.0, success=100%, latents=(40, 2, 19)
+  [16/80] reward=1.0, success=100%, latents=(51, 2, 19)
+  [24/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [32/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [40/80] reward=1.0, success=100%, latents=(48, 2, 19)
+  [48/80] reward=1.0, success=100%, latents=(40, 2, 19)
+  [56/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [64/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [72/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [80/80] reward=0.0, success=0%, latents=(60, 2, 19)
+[10demos_epoch20] Done: 80 rollouts, 618s (7.7s/rollout)
+
+[10demos_epoch30] Have 0, need 100 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[20:30:28] INFO     build_rollout_policy_from_checkpoint took 0.77 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+[20:30:29] INFO     build_env_from_checkpoint took 0.36 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [10/100] reward=1.0, success=100%, latents=(50, 2, 19)
+  [20/100] reward=1.0, success=100%, latents=(54, 2, 19)
+  [30/100] reward=1.0, success=100%, latents=(48, 2, 19)
+  [40/100] reward=1.0, success=100%, latents=(50, 2, 19)
+  [50/100] reward=1.0, success=100%, latents=(44, 2, 19)
+  [60/100] reward=1.0, success=100%, latents=(46, 2, 19)
+  [70/100] reward=1.0, success=100%, latents=(39, 2, 19)
+  [80/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [90/100] reward=1.0, success=100%, latents=(40, 2, 19)
+  [100/100] reward=1.0, success=100%, latents=(49, 2, 19)
+[10demos_epoch30] Done: 100 rollouts, 738s (7.4s/rollout)
+
+[100demos_epoch40] Have 0, need 100 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[20:42:52] INFO     build_rollout_policy_from_checkpoint took 0.76 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+           INFO     build_env_from_checkpoint took 0.36 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [10/100] reward=1.0, success=100%, latents=(37, 2, 19)
+  [20/100] reward=1.0, success=100%, latents=(40, 2, 19)
+  [30/100] reward=1.0, success=100%, latents=(46, 2, 19)
+  [40/100] reward=1.0, success=100%, latents=(46, 2, 19)
+  [50/100] reward=1.0, success=100%, latents=(41, 2, 19)
+  [60/100] reward=1.0, success=100%, latents=(45, 2, 19)
+  [70/100] reward=1.0, success=100%, latents=(41, 2, 19)
+  [80/100] reward=1.0, success=100%, latents=(53, 2, 19)
+  [90/100] reward=0.0, success=0%, latents=(60, 2, 19)
+  [100/100] reward=1.0, success=100%, latents=(32, 2, 19)
+[100demos_epoch40] Done: 100 rollouts, 667s (6.7s/rollout)
+
+[200demos_epoch40] Have 20, need 80 more rollouts...
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+number of parameters: 6.576359e+07
+[20:53:59] INFO     build_rollout_policy_from_checkpoint took 0.81 common.py:137
+                    seconds to execute                                          
+Created environment with name Lift
+Action size is 7
+ROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)
+           INFO     build_env_from_checkpoint took 0.37 seconds to common.py:137
+                    execute                                                     
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+  [8/80] reward=1.0, success=100%, latents=(40, 2, 19)
+  [16/80] reward=1.0, success=100%, latents=(46, 2, 19)
+  [24/80] reward=1.0, success=100%, latents=(37, 2, 19)
+  [32/80] reward=1.0, success=100%, latents=(41, 2, 19)
+  [40/80] reward=1.0, success=100%, latents=(42, 2, 19)
+  [48/80] reward=1.0, success=100%, latents=(45, 2, 19)
+  [56/80] reward=1.0, success=100%, latents=(46, 2, 19)
+  [64/80] reward=1.0, success=100%, latents=(37, 2, 19)
+  [72/80] reward=0.0, success=0%, latents=(60, 2, 19)
+  [80/80] reward=1.0, success=100%, latents=(52, 2, 19)
+[200demos_epoch40] Done: 80 rollouts, 535s (6.7s/rollout)
+
+======================================================================
+All done in 91.3 min
+======================================================================
+
+Rollout counts:
+       50demos_epoch10: 80 rollouts
+       10demos_epoch10: 100 rollouts
+      200demos_epoch10: 80 rollouts
+      100demos_epoch20: 100 rollouts
+       10demos_epoch20: 80 rollouts
+       10demos_epoch30: 100 rollouts
+      100demos_epoch40: 100 rollouts
+      200demos_epoch40: 80 rollouts
+
+=== DONE: Thu Mar 12 21:02:42 PDT 2026 ===

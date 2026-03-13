@@ -53,6 +53,43 @@ Note: v0.2.4's 18.52% was a coincidence — the per-step sum happened to land ne
 
 5. **The 0% target SR from rollouts is suspicious:** Oracle says the policy has 54% SR, but the loaded rollouts show 0% SR when evaluated with `cube_z > 0.84`. This may be because the rollout `.h5` files store observations that terminate early (before the cube is fully lifted) — the `total_reward` in the `.h5` metadata might show success but the stored trajectory may not contain the lift event. Worth investigating.
 
+## Positive Guidance Implementation Details
+
+The positive guidance uses `RobomimicDiffusionScorer` (in `src/latent_sope/robomimic_interface/guidance.py`) to compute `∇_a log π(a|s)` from the robomimic DiffusionPolicyUNet target policy.
+
+### How it works
+
+At each denoising step, after computing `model_mean` from `p_mean_variance`, the guidance loop:
+
+1. **Unnormalizes** `model_mean` to obs space, splits into `states_chunk (B,T,19)` and `actions_chunk (B,T,7)`.
+
+2. **Obs conditioning**: Takes the first `To` (observation_horizon=2) states from the chunk, decodes to obs dicts via `LowDimConcatEncoder`, runs through robomimic's obs encoder → `(B, To * obs_features)` conditioning vector.
+
+3. **Action sequence**: Places chunk actions into a `Tp=16` prediction horizon at positions `[To-1, To-1+T)`, repeat-padding before/after with nearest chunk action. This is critical — robomimic's ConditionalUnet1D is a sequence model unlike SOPE's single-step MLP.
+
+4. **UNet forward pass** at `score_timestep=1` (near-clean): `noise_pred = noise_pred_net(action_seq, t=1, obs_cond)`.
+
+5. **Score extraction**: `scores = -noise_pred[:, start:end, :] / sigma[1]`, using the relationship `∇_a log p(a|s) ≈ -ε_pred / σ[t]` at small t.
+
+6. **L2 normalization** per timestep (matching SOPE's `normalize_v` when `clamp=False, normalize_grad=True`).
+
+7. **Scaling**: `guide = action_scale * guide` (no adaptive cosine decay, matching SOPE defaults for diffusion policies).
+
+8. **Application**: Added to `model_mean` in unnormalized space, then re-normalized → re-conditioned → un-normalized for next `k_guide` iteration.
+
+### Verified against SOPE reference
+
+The implementation was checked against SOPE's `default_sample_fn` (lines 152–250) and `p_sample_loop` (lines 387–439) in `third_party/sope/opelab/core/baselines/diffusion/diffusion.py`. All of the following match:
+- Unnormalize → guide → normalize → condition → unnormalize cycle
+- L2 normalization per timestep
+- Guide applied only to action dimensions (zeros for states)
+- Post-noise conditioning in outer loop
+- Noise zeroing at t=0
+
+### Known limitation
+
+The scorer evaluates the target policy on partially-denoised states from `model_mean`. Early in the diffusion process (high t), these states are noisy and far from real observations, so policy scores may not be meaningful. SOPE has the same issue. The `use_adaptive` cosine schedule (disabled here per SOPE defaults for diffusion policies) was SOPE's attempt to mitigate this.
+
 ## Next steps
 
 - Investigate the 0% target rollout SR discrepancy (oracle says 54%, rollouts say 0%)

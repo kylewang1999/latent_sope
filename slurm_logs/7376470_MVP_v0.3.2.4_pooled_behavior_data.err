@@ -1,0 +1,110 @@
+[NbConvertApp] Converting notebook experiments/2026-03-13/MVP_v0.3.2.4_pooled_behavior_data.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+print(f"{'scale':>6s} {'ratio':>6s} | ", end="")
+print(" | ".join([f"{k[:15]:>15s}" for k in sorted_policy_keys]), end="")
+print(f" | {'rho':>6s} {'MAE':>6s}")
+print("-" * 160)
+
+best_cfg = None
+best_rho = -2
+best_mae = 999
+
+for (scale, ratio), results in sweep_results.items():
+    oracles = [results[k]["oracle"] for k in sorted_policy_keys]
+    opes = [results[k]["ope"] for k in sorted_policy_keys]
+    srs = [results[k]["sr"] for k in sorted_policy_keys]
+
+    if len(set(opes)) > 1:
+        rho, _ = sp_stats.spearmanr(oracles, opes)
+    else:
+        rho = float('nan')
+    mae = np.mean(np.abs(np.array(oracles) - np.array(opes)))
+
+    row = f"{scale:>6.2f} {ratio:>6.2f} | "
+    row += " | ".join([f"{ope:.2f} ({sr*100:3.0f}%)" for ope, sr in zip(opes, srs)])
+    row += f" | {rho:>6.3f} {mae:>6.3f}"
+    print(row)
+
+    if not np.isnan(rho) and (rho > best_rho or (rho == best_rho and mae < best_mae)):
+        best_rho = rho
+        best_mae = mae
+        best_cfg = (scale, ratio)
+
+# Oracle row
+print()
+row = f"{'ORACLE':>13s} | "
+row += " | ".join([f"{oracle_values[k]['mean_return']:.2f} ({oracle_values[k]['success_rate']*100:3.0f}%)" for k in sorted_policy_keys])
+print(row)
+
+print(f"\nBest config: scale={best_cfg[0]}, ratio={best_cfg[1]} (rho={best_rho:.3f}, MAE={best_mae:.3f})")
+------------------
+
+----- stdout -----
+ scale  ratio | 200demos_epoch1 | 200demos_epoch4 |    rho    MAE
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+  0.00   0.00 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.05   0.00 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.05   0.25 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.05   0.50 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.10   0.00 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.10   0.25 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.10   0.50 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.20   0.00 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.20   0.25 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.20   0.50 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.50   0.00 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.50   0.25 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+  0.50   0.50 | 0.00 (  0%) | 0.00 (  0%) |    nan  0.540
+
+       ORACLE | 0.18 ( 18%) | 0.90 ( 90%)
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mTypeError[0m                                 Traceback (most recent call last)
+Cell [0;32mIn[13], line 37[0m
+[1;32m     34[0m row [38;5;241m+[39m[38;5;241m=[39m [38;5;124m"[39m[38;5;124m | [39m[38;5;124m"[39m[38;5;241m.[39mjoin([[38;5;124mf[39m[38;5;124m"[39m[38;5;132;01m{[39;00moracle_values[k][[38;5;124m'[39m[38;5;124mmean_return[39m[38;5;124m'[39m][38;5;132;01m:[39;00m[38;5;124m.2f[39m[38;5;132;01m}[39;00m[38;5;124m ([39m[38;5;132;01m{[39;00moracle_values[k][[38;5;124m'[39m[38;5;124msuccess_rate[39m[38;5;124m'[39m][38;5;241m*[39m[38;5;241m100[39m[38;5;132;01m:[39;00m[38;5;124m3.0f[39m[38;5;132;01m}[39;00m[38;5;124m%)[39m[38;5;124m"[39m [38;5;28;01mfor[39;00m k [38;5;129;01min[39;00m sorted_policy_keys])
+[1;32m     35[0m [38;5;28mprint[39m(row)
+[0;32m---> 37[0m [38;5;28mprint[39m([38;5;124mf[39m[38;5;124m"[39m[38;5;130;01m\n[39;00m[38;5;124mBest config: scale=[39m[38;5;132;01m{[39;00m[43mbest_cfg[49m[43m[[49m[38;5;241;43m0[39;49m[43m][49m[38;5;132;01m}[39;00m[38;5;124m, ratio=[39m[38;5;132;01m{[39;00mbest_cfg[[38;5;241m1[39m][38;5;132;01m}[39;00m[38;5;124m (rho=[39m[38;5;132;01m{[39;00mbest_rho[38;5;132;01m:[39;00m[38;5;124m.3f[39m[38;5;132;01m}[39;00m[38;5;124m, MAE=[39m[38;5;132;01m{[39;00mbest_mae[38;5;132;01m:[39;00m[38;5;124m.3f[39m[38;5;132;01m}[39;00m[38;5;124m)[39m[38;5;124m"[39m)
+
+[0;31mTypeError[0m: 'NoneType' object is not subscriptable
+
