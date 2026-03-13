@@ -69,12 +69,13 @@ The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts
 - Only supports gamma=1.0; for discounted use `oracle_value_from_trajectories()`
 - Tested end-to-end on Lift diffusion policy checkpoint
 
-### Step 1: Collect Offline Data — DONE
+### Step 1: Collect Offline Data — DONE (has bug, see below)
 - `robomimic_interface/collect.py`: `collect_rollouts(ckpt, output_dir, num_rollouts)` → `CollectionResult`
 - `discover_obs_keys(ckpt)` auto-discovers low-dim obs keys
 - Saves `.h5` files via `save_rollout_latents()`, consumed directly by Step 2
 - Uses `LowDimConcatEncoder` (feat_type="low_dim_concat") — latents = concatenated obs keys
 - Tested: 3 rollouts on Lift, latents shape (T, 2, 19), actions (T, 7)
+- **BUG**: Rollout recorder stores pre-step `obs`, not post-step `next_obs`. On success termination, the final state (cube_z > 0.84) is never recorded. See Known Bugs section below.
 
 ### Step 2: Chunk the Offline Data — DONE
 - `dataset.py`: `make_rollout_chunk_dataloader(paths, config)` → DataLoader + NormalizationStats
@@ -180,15 +181,20 @@ The pipeline is documented in `scripts/latent_sope_5_rollouts.ipynb` (5 rollouts
 #### Step 7b: OPE Summary Visualization — DONE
 - 3-panel summary figure: (1) Oracle vs OPE bar chart with error bars, (2) histogram of synthetic returns with oracle/OPE lines, (3) text summary with all key metrics + sanity check results
 
+### Known Bugs (found 2026-03-12)
+
+1. **Rollout recorder drops success state** (`rollout.py:462–498`): The `rollout()` function records pre-step `obs`, not post-step `next_obs`. On success termination, the final observation where `cube_z > 0.84` is never stored. The env's reward (1.0) is recorded correctly, but the observation data maxes out at ~0.838. This means:
+   - Target rollout SR computed from cube_z is always 0%, even for 90% SR policies
+   - The diffuser trains on data where successful lifts only reach cube_z ≈ 0.835
+   - Synthetic trajectory scoring (cube_z > 0.84) systematically underestimates success rate
+   - Expert demos in the HDF5 don't have this bug (they reach cube_z = 0.864–0.886)
+   - See full bug report: `results/2026-03-12/bugs_v032_observation_recording.md`
+
+2. **LiftRewardFn threshold unreachable in recorded data** (`eval/reward_model.py:66`): Uses `success_z = 0.84` which is correct for the env, but unreachable in recorded rollout data due to Bug 1. Affects both the library function and notebook inline versions.
+
 ### Next Steps
-1. **Signs-of-life run**: 50 rollouts (already collected in `rollout_latents_50/`) + 50 epochs
-   - Expect: generated states stay in-distribution (cube z near 0.82), OPE estimate in [0, 1]
-   - If noisy: scale to 200 rollouts + 100 epochs (~1.5 hr)
-2. **200-rollout full-scale run** (~2 hr total on current hardware: 2x P100, 20 CPU cores)
-   - Steps 0+1 dominate (~50 min each, serial MuJoCo rollouts)
-   - Build a parallel collection script (4-5 workers) to cut rollout time from ~100 min to ~25 min
-   - Training: 100 epochs on ~5000 chunks (~78 batches/epoch) ≈ 15 min
-   - Can reuse existing 50 rollouts and collect 150 more
+1. **Fix rollout recorder** to store final `next_obs` on success termination, then re-collect all rollouts
+2. **Re-run v0.3.2** with corrected data
 3. **Fix policy guidance (Step 4)** — currently in progress
 
 ## Experiments

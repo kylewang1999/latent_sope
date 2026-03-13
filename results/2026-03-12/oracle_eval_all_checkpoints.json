@@ -1,0 +1,114 @@
+{
+  "10demos_epoch10": {
+    "policy": "10demos",
+    "epoch": 10,
+    "mean_return": 0.08,
+    "std_return": 0.2713,
+    "success_rate": 0.08
+  },
+  "10demos_epoch20": {
+    "policy": "10demos",
+    "epoch": 20,
+    "mean_return": 0.52,
+    "std_return": 0.4996,
+    "success_rate": 0.52
+  },
+  "10demos_epoch30": {
+    "policy": "10demos",
+    "epoch": 30,
+    "mean_return": 0.62,
+    "std_return": 0.4854,
+    "success_rate": 0.62
+  },
+  "10demos_epoch40": {
+    "policy": "10demos",
+    "epoch": 40,
+    "mean_return": 0.52,
+    "std_return": 0.4996,
+    "success_rate": 0.52
+  },
+  "50demos_epoch10": {
+    "policy": "50demos",
+    "epoch": 10,
+    "mean_return": 0.0,
+    "std_return": 0.0,
+    "success_rate": 0.0
+  },
+  "50demos_epoch20": {
+    "policy": "50demos",
+    "epoch": 20,
+    "mean_return": 0.6,
+    "std_return": 0.4899,
+    "success_rate": 0.6
+  },
+  "50demos_epoch30": {
+    "policy": "50demos",
+    "epoch": 30,
+    "mean_return": 0.82,
+    "std_return": 0.3842,
+    "success_rate": 0.82
+  },
+  "50demos_epoch40": {
+    "policy": "50demos",
+    "epoch": 40,
+    "mean_return": 0.88,
+    "std_return": 0.325,
+    "success_rate": 0.88
+  },
+  "100demos_epoch10": {
+    "policy": "100demos",
+    "epoch": 10,
+    "mean_return": 0.06,
+    "std_return": 0.2375,
+    "success_rate": 0.06
+  },
+  "100demos_epoch20": {
+    "policy": "100demos",
+    "epoch": 20,
+    "mean_return": 0.42,
+    "std_return": 0.4936,
+    "success_rate": 0.42
+  },
+  "100demos_epoch30": {
+    "policy": "100demos",
+    "epoch": 30,
+    "mean_return": 0.72,
+    "std_return": 0.449,
+    "success_rate": 0.72
+  },
+  "100demos_epoch40": {
+    "policy": "100demos",
+    "epoch": 40,
+    "mean_return": 0.76,
+    "std_return": 0.4271,
+    "success_rate": 0.76
+  },
+  "200demos_epoch10": {
+    "policy": "200demos",
+    "epoch": 10,
+    "mean_return": 0.18,
+    "std_return": 0.3842,
+    "success_rate": 0.18
+  },
+  "200demos_epoch20": {
+    "policy": "200demos",
+    "epoch": 20,
+    "mean_return": 0.24,
+    "std_return": 0.4271,
+    "success_rate": 0.24
+  },
+  "200demos_epoch30": {
+    "policy": "200demos",
+    "epoch": 30,
+    "mean_return": 0.42,
+    "std_return": 0.4936,
+    "success_rate": 0.42
+  },
+  "200demos_epoch40": {
+    "policy": "200demos",
+    "epoch": 40,
+    "mean_return": 0.9,
+    "std_return": 0.3,
+    "success_rate": 0.9
+  }
+}
