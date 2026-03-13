@@ -62,6 +62,14 @@ Hyperparameter sweep over guidance strength to find a config that works for mult
 
 3. **The unguided diffuser has the wrong ranking.** scale=0.0 gives the lowest MAE (0.360) but ρ=-0.95 (perfectly inverted). The 0% oracle policy gets 30% synthetic SR while the 90% policy gets 10%. Without guidance, the diffuser generates from its prior which is dominated by expert demos — all policies look similar.
 
+### Why is the unguided base SR so much lower than v0.3.2.1?
+
+v0.3.2.1 unguided SR was 60% (12/20), but v0.3.2.2 unguided averages ~22% (30%/25%/25%/10%). Both trained on the same data (200 expert + 80 target) with the same architecture and similar final loss (0.160 vs 0.162).
+
+The cause: **v0.3.2.2 retrained the diffuser from scratch with a different random seed.** Even with similar training loss, diffusion models can converge to different local minima with very different generation quality. The [30%, 25%, 25%, 10%] per-policy spread is just noise from 20 binary trials (standard error ±10%), but the overall average being 22% vs 60% reflects a worse-quality diffuser.
+
+This reinforces the importance of **saving and reusing checkpoints** (now fixed — shared diffuser saved at `diffusion_ckpts/mvp_v032_shared/`). Future experiments should load the saved diffuser rather than retraining, unless the training data changes.
+
 ### Root cause: binary reward + few trajectories + recording bug
 
 The results are dominated by noise. With 20 trajectories and binary reward (cube_z > 0.84):
