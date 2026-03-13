@@ -9,144 +9,89 @@
 Debug `RobomimicDiffusionScorer.grad_log_prob()` to determine why target policy
 guidance in v0.2.5.2 suppressed success rate (60% → 24%) instead of improving it.
 
-## Scorer Configuration
+## TL;DR
 
-| Parameter | Value |
-|-----------|-------|
-| score_timestep | 1 |
-| sigma at t=1 | 0.0418 |
-| observation_horizon (To) | 2 |
-| prediction_horizon (Tp) | 16 |
-| action_start | 1 |
-| Scoreable chunk positions | 4/4 (no padding) |
+**The scorer's gradient direction is correct, but the magnitude is catastrophic.**
+
+- Gradient descent at lr=0.01 converges 90% of the time (Test 5) — the scorer
+  knows where the target policy's actions are
+- But raw gradients are 13x larger than actions (|grad|=15 vs |action|=1.1)
+- v0.2.5.2's `action_scale=0.05–0.5` was way too large, even with normalized
+  gradients, because guidance accumulates over 256 denoising steps
+- Root cause: our sigma at t=1 is 4.5x smaller than SOPE's (0.025 vs 0.113),
+  amplifying gradients 39.8x instead of 8.85x
 
 ## Test Results
 
-### Test 1: Sigma Check — SMALL BUT NOT EXTREME
+| Test | Result | Interpretation |
+|------|--------|---------------|
+| Sigma check | sigma=0.0418, amplification=24x | Significant but not extreme |
+| Direction (lr=0.1) | 20% closer (worse than random) | Overshooting — step too large |
+| Direction (lr=0.01) | Works (see GD test) | Direction is correct at small scale |
+| |grad|/|action| | 12.86x | Gradients massively larger than actions |
+| GD convergence (lr=0.01) | **90% converged, 66% improvement** | **Scorer works at small lr** |
 
-sigma=0.0418 at t=1. The score formula is `-noise_pred / sigma`, so gradients
-are amplified by ~24x. Not near-zero, but a significant multiplier.
+## Why v0.2.5.2 Guidance Failed
 
-### Test 2: Gradient Direction — FAILS AT LR=0.1
+Two compounding problems:
 
-- Only **20%** of gradient steps moved closer to real action (worse than random 50%)
-- Mean relative distance change: **-52%** (moved 52% farther away)
-- |grad| at real actions: mean=15.0, at random actions: mean=58.0
-- The gradient magnitude ordering is correct (|grad_real| < |grad_rand|), but
-  a single step at lr=0.1 overshoots so badly it ends up farther away.
+### 1. Gradient accumulation over 256 denoising steps
 
-### Test 3: Gradient Magnitude — **WAY TOO LARGE**
+With `normalize_grad=True`, each gradient is unit-norm. But guidance is applied
+at every denoising step, so total perturbation ≈ `action_scale × 256`:
 
-- **|grad|/|action| ratio = 12.86** (gradients are 13x larger than actions)
-- Per-dimension ratios range from 5x (gripper) to **257x** (act_3)
+| action_scale | Total perturbation | % of |action|≈1.1 |
+|---|---|---|
+| 0.05 | 12.8 | **1164%** |
+| 0.10 | 25.6 | **2327%** |
+| 0.50 | 128.0 | **11636%** |
 
-**Impact on guidance in v0.2.5.2:**
+Every config in v0.2.5.2 was massively overpowered.
 
-| action_scale | Guidance magnitude | % of action magnitude |
-|-------------|-------------------|----------------------|
-| 0.05 | 0.72 | **64%** |
-| 0.10 | 1.44 | **129%** |
-| 0.20 | 2.88 | **258%** |
-| 0.50 | 7.21 | **645%** |
+### 2. Smaller sigma than SOPE → larger gradient amplification
 
-Even the smallest guidance scale (0.05) adds perturbations that are 64% of the
-action magnitude. At scale=0.5, the guidance is 6.5x larger than the actions
-themselves — completely overwhelming the diffusion model.
+The score formula is `-noise_pred / sigma`. Our sigma is much smaller:
 
-### Test 4: Gradient Field — (visual only, see notebook)
+| System | Steps | Schedule | sigma[1] | Amplification |
+|--------|-------|----------|----------|--------------|
+| SOPE DiffusionPolicy | 32 | linear | 0.113 | 8.85x |
+| Our RobomimicScorer | 100 | cosine | 0.025 | 39.8x |
 
-### Test 5: Gradient Descent — WORKS AT LR=0.01
+The cosine schedule has much less noise at t=1, and more total steps means t=1
+is a smaller fraction of the schedule (closer to clean data where sigma → 0).
 
-- **90% converged** toward real action (18/20)
-- Mean distance improvement: **66.3%**
-- Final action std ≈ real action std (no mode collapse)
+## Comparison to SOPE Reference Implementation
 
-This is the key finding: at a small enough learning rate, following the gradient
-**does** recover the real actions.
+SOPE also applies guidance at every denoising step (`default_sample_fn`, line 226:
+`guide = action_scale * guide`), so the accumulation issue exists there too. But
+SOPE works because the numbers are very different:
 
-### Test 5b: LR Sweep — (visual only, see notebook)
+| | SOPE | Ours |
+|---|---|---|
+| Policy scorer | `gradlog()` — autograd on log_prob, no sigma division | `-noise_pred / sigma` |
+| Diffusion policy steps | 32 | 100 |
+| Noise schedule | linear (beta0=0.1, beta1=20) | squaredcos_cap_v2 |
+| sigma[1] | 0.113 | 0.025 |
+| Gradient amplification | 8.85x | 39.8x |
+| Chunk diffusion steps | 20–200 | 256 |
+| Default action_scale | 0.2 | 0.05–0.5 (v0.2.5.2) |
 
-## Key Finding: The Gradient Direction Is Correct, But the Magnitude Is Catastrophic
+Key differences:
+1. **SOPE's `gradlog()` uses `torch.autograd.grad` on the actual log probability**
+   (policy.py line 71). No sigma division, so gradients are naturally smaller.
+   Our scorer uses the score function `-noise_pred / sigma`, which amplifies by
+   1/sigma = 39.8x at t=1.
+2. **SOPE's diffusion policy uses only 32 steps** with a linear schedule.
+   At t=1/32, sigma is already 0.113 — much noisier than our t=1/100 with cosine.
+3. **Fewer chunk diffusion steps** means less accumulation per chunk.
 
-The apparent contradiction between Test 2 (20% success) and Test 5 (90% success)
-resolves cleanly:
+The net effect: SOPE's effective guidance strength per chunk is roughly
+`0.2 × 100_steps × 8.85x_amp = 177`, while ours was
+`0.05 × 256_steps × 39.8x_amp = 509` — about 3x stronger even at the smallest
+scale, and that's *before* accounting for gradient normalization differences.
 
-- **Test 2** uses lr=0.1 → step size = 0.1 × 58 = **5.8** (for random actions).
-  With |a_real| ≈ 1.1, this overshoots by 5x and lands farther away.
-- **Test 5** uses lr=0.01 → step size = 0.01 × 58 = **0.58**, small enough to
-  converge without overshooting.
+## Fix (tested in v0.2.5.4)
 
-**The scorer's gradient direction is valid. The problem is purely one of scale.**
-
-## Root Cause of v0.2.5.2 Guidance Failure
-
-The guidance loop in `generate_trajectories_full_guidance` applies:
-```
-model_mean += action_scale * grad
-```
-where `|grad| ≈ 15` at real actions and `|action| ≈ 1.1`. Even `action_scale=0.05`
-produces a perturbation of 0.75, which is 64% of the action magnitude — far too
-aggressive for a single denoising step.
-
-The guidance doesn't just nudge the trajectory — it **overwrites** the diffusion
-model's prediction with the scorer's gradient. This explains:
-- pos_only configs reducing SR: the oversized gradient destabilizes the trajectory
-- Stronger guidance = worse MSE: larger perturbations = more destabilization
-- full_0.2_r0.5 having 68% SR: the negative behavior term partially cancels the
-  oversized positive term, accidentally producing a net guidance closer to zero
-
-## Fix
-
-Reduce `action_scale` by 10–100x. Based on the gradient magnitudes:
-- Target step size should be ~1–5% of action magnitude
-- With |grad| ≈ 15, need action_scale ≈ 0.001–0.005
-- Alternatively, normalize gradients to unit norm before applying action_scale
-  (the notebook already has `normalize_grad=True`, but this normalizes per-dim,
-  not the full gradient vector — need to verify this is working correctly)
-
-## Resolved: Why normalize_grad=True didn't fix this
-
-Verified the v0.2.5.2 code. The normalization IS correct:
-```python
-target_grad = target_grad / (target_grad.norm(dim=-1, keepdim=True) + eps)
-```
-This normalizes each (B, T) position's gradient to unit norm across action_dim.
-After normalization, `|target_grad| = 1.0` per timestep, and `action_scale`
-directly controls step size per denoising step.
-
-**The real problem is accumulation across denoising steps.**
-
-Guidance is applied at **every one of the 256 denoising steps**. The cumulative
-perturbation is approximately:
-
-```
-total_perturbation ≈ action_scale × N_DIFFUSION_STEPS
-  action_scale=0.05 → 0.05 × 256 = 12.8  (1164% of |action|)
-  action_scale=0.10 → 0.10 × 256 = 25.6  (2327% of |action|)
-  action_scale=0.20 → 0.20 × 256 = 51.2  (4655% of |action|)
-```
-
-Even the smallest guidance scale accumulates a perturbation that is **11.6x the
-action magnitude** — completely overwhelming the diffusion model's prediction.
-
-This also explains the SOPE reference implementation: SOPE uses much fewer
-diffusion steps (e.g., 20–100) and smaller guidance scales on simpler environments.
-With 256 steps, the guidance scale needs to be proportionally smaller.
-
-### Corrected action_scale estimates
-
-To achieve ~5–10% total perturbation relative to action magnitude:
-```
-target = 0.05 * |action| = 0.055
-action_scale = target / N_DIFFUSION_STEPS = 0.055 / 256 ≈ 0.0002
-```
-
-Recommended sweep: `action_scale ∈ [0.0001, 0.0002, 0.0005, 0.001, 0.002]`
-
-## Next Steps
-
-1. **Re-run guidance sweep with corrected action_scale** in [0.0001 – 0.002]
-2. **Consider reducing N_DIFFUSION_STEPS** (e.g., 64 or 100) to reduce
-   accumulation and speed up generation (currently 256 steps × 20 chunks =
-   ~120s per config)
-3. **Fix the rollout recorder bug** before drawing OPE conclusions
+Two options:
+1. **Use `score_timestep=5`** → sigma=0.089, comparable to SOPE's 0.113
+2. **Reduce `action_scale` to 0.0003–0.001** → total perturbation = 8–26% of |action|
