@@ -33,7 +33,7 @@ UNet architecture and produce nearly identical score functions at t=5 (cosine si
 per target policy on that policy's rollout data.
 
 **Approach:**
-1. Collect 10 rollouts from each of 6 target policies (using simulator)
+1. Load 80-100 existing rollouts per policy from disk (no simulator needed)
 2. Train a small diffusion MLP per policy on its (state, action) data
 3. Verify gradient directions differ across policies (cosine sim diagnostic)
 4. Run cross-policy guided generation using small MLP scorers
@@ -64,11 +64,7 @@ from opelab.core.baselines.diffusion.helpers import EMA, apply_conditioning
 import robomimic.utils.file_utils as FileUtils
 import robomimic.utils.obs_utils as ObsUtils
 
-from latent_sope.robomimic_interface.checkpoints import (
-    load_checkpoint, build_algo_from_checkpoint,
-    build_rollout_policy_from_checkpoint, build_env_from_checkpoint,
-)
-from latent_sope.robomimic_interface.rollout import rollout as do_rollout
+from latent_sope.robomimic_interface.checkpoints import load_checkpoint
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
@@ -106,23 +102,27 @@ MLP_DIFFUSION_STEPS = 32
 MLP_TRAIN_STEPS = 5000
 MLP_BATCH_SIZE = 256
 MLP_LR = 3e-4
-N_ROLLOUTS_PER_POLICY = 10
-
 # Guidance config
 ACTION_SCALE = 0.01  # middle ground between our 0.001 and SOPE's 0.05
 
+ROLLOUT_BASE = PROJECT_ROOT / "rollouts"
+
 TARGET_POLICIES = [
-    {"name": "10demos_epoch10",  "dir": "lift_diffusion_10demos/20260311115828",  "ckpt": "models/model_epoch_10.pth"},
-    {"name": "100demos_epoch20", "dir": "lift_diffusion_100demos/20260311135551", "ckpt": "models/model_epoch_20.pth"},
-    {"name": "test_checkpoint",  "dir": "test/20260309132349",                   "ckpt": "last.pth"},
-    {"name": "10demos_epoch30",  "dir": "lift_diffusion_10demos/20260311115828",  "ckpt": "models/model_epoch_30.pth"},
-    {"name": "50demos_epoch30",  "dir": "lift_diffusion_50demos/20260311134204",  "ckpt": "models/model_epoch_30.pth"},
-    {"name": "200demos_epoch40", "dir": "lift_diffusion_200demos/20260311141036", "ckpt": "models/model_epoch_40.pth"},
+    {"name": "10demos_epoch10",  "rollout_dir": "multi_policy_10demos_epoch10"},
+    {"name": "100demos_epoch20", "rollout_dir": "multi_policy_100demos_epoch20"},
+    {"name": "test_checkpoint",  "rollout_dir": "target_policy_50"},
+    {"name": "10demos_epoch30",  "rollout_dir": "multi_policy_10demos_epoch30"},
+    {"name": "100demos_epoch40", "rollout_dir": "multi_policy_100demos_epoch40"},
+    {"name": "200demos_epoch40", "rollout_dir": "multi_policy_200demos_epoch40"},
 ]
 
-print(f"action_scale={ACTION_SCALE}, {N_ROLLOUTS_PER_POLICY} rollouts/policy")
+print(f"action_scale={ACTION_SCALE}")
 print(f"{NUM_SYNTHETIC} trajs, T_GEN={T_GEN}")
-print(f"MLP: {MLP_HIDDEN} hidden, {MLP_EMB} emb, {MLP_DIFFUSION_STEPS} steps, {MLP_TRAIN_STEPS} train steps")""")
+print(f"MLP: {MLP_HIDDEN} hidden, {MLP_EMB} emb, {MLP_DIFFUSION_STEPS} steps, {MLP_TRAIN_STEPS} train steps")
+for p in TARGET_POLICIES:
+    rd = ROLLOUT_BASE / p["rollout_dir"]
+    n = len(list(rd.glob("rollout_*.h5")))
+    print(f"  {p['name']:<22} {n} rollouts from {p['rollout_dir']}")""")
 
 # ── Cell 2: SmallDiffusionScorer class ──
 code("""\
@@ -140,11 +140,9 @@ class SinusoidalPosEmb(nn.Module):
 
 
 class SmallDiffusionScorer(nn.Module):
-    \\"\\"\\"Small diffusion MLP scorer matching SOPE's PearceMlp architecture.
-
-    Single-step noise prediction (no temporal UNet), 32 diffusion steps,
-    linear beta schedule. Trained via standard diffusion loss on (state, action) pairs.
-    \\"\\"\\"
+    # Small diffusion MLP scorer matching SOPE's PearceMlp architecture.
+    # Single-step noise prediction (no temporal UNet), 32 diffusion steps,
+    # linear beta schedule. Trained via standard diffusion loss on (state, action) pairs.
 
     def __init__(self, state_dim, action_dim, hidden_dim=256, emb_dim=64,
                  diffusion_steps=32):
@@ -287,54 +285,40 @@ initial_states_t = torch.tensor(
 print(f"\\nInitial states: {initial_states_t.shape}")
 print("Normalization computed from 50 target rollouts + 200 expert demos")""")
 
-# ── Cell 4: Collect rollouts from each target policy ──
+# ── Cell 4: Load rollouts from disk ──
 code("""\
-# ── Collect rollouts from each target policy ──
-print(f"Collecting {N_ROLLOUTS_PER_POLICY} rollouts per policy...")
-print(f"Estimated time: {N_ROLLOUTS_PER_POLICY * len(TARGET_POLICIES) * 15 / 60:.0f} min\\n")
+# ── Load existing rollouts from disk ──
+print("Loading rollouts from disk...\\n")
 
 policy_train_data = {}
 t0_all = time.time()
 
 for i, pol in enumerate(TARGET_POLICIES):
     name = pol["name"]
-    run_dir = CKPT_BASE / pol["dir"]
-    ckpt_file = pol["ckpt"]
+    rollout_dir = ROLLOUT_BASE / pol["rollout_dir"]
     osr = oracle_sr_map[name]
 
+    h5_files = sorted(rollout_dir.glob("rollout_*.h5"))
     print(f"[{i+1}/{len(TARGET_POLICIES)}] {name} (oracle={osr*100:.0f}%)", end=" ", flush=True)
-    t0 = time.time()
-
-    ckpt = load_checkpoint(run_dir, ckpt_path=Path(ckpt_file))
-    rollout_policy = build_rollout_policy_from_checkpoint(ckpt, device="cpu", verbose=False)
-    env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
 
     all_states, all_actions = [], []
-    for ep in range(N_ROLLOUTS_PER_POLICY):
-        obs = env.reset()
-        rollout_policy.start_episode()
-        for t in range(T_GEN):
-            act = rollout_policy(obs)
-            state = np.concatenate([obs[k].flatten() for k in OBS_KEYS])
-            all_states.append(state.astype(np.float32))
-            all_actions.append(act.astype(np.float32))
-            obs, reward, done, info = env.step(act)
-            if done:
-                break
+    for path in h5_files:
+        with h5py.File(path, "r") as f:
+            latents = f["latents"][:]  # (T, 2, 19)
+            actions = f["actions"][:]  # (T, 7)
+        # Extract last frame_stack state
+        states = (latents[:, -1, :] if latents.ndim == 3 else latents).astype(np.float32)
+        all_states.append(states)
+        all_actions.append(actions.astype(np.float32))
 
-    states_arr = np.array(all_states, dtype=np.float32)
-    actions_arr = np.array(all_actions, dtype=np.float32)
+    states_arr = np.concatenate(all_states, axis=0)
+    actions_arr = np.concatenate(all_actions, axis=0)
     policy_train_data[name] = {"states": states_arr, "actions": actions_arr}
 
-    elapsed = time.time() - t0
-    print(f"— {elapsed:.0f}s, {len(states_arr)} transitions, "
-          f"actions shape {actions_arr.shape}")
-
-    del rollout_policy, env, ckpt
-    torch.cuda.empty_cache()
+    print(f"— {len(h5_files)} rollouts, {len(states_arr)} transitions")
 
 total_collect = time.time() - t0_all
-print(f"\\nTotal collection: {total_collect:.0f}s ({total_collect/60:.1f} min)")""")
+print(f"\\nTotal load: {total_collect:.0f}s")""")
 
 # ── Cell 5: Train small MLP per policy + gradient comparison ──
 code("""\
@@ -710,7 +694,7 @@ lines = [
     "",
     f"Approach: Train small MLP (SOPE-style) per target policy",
     f"MLP: {MLP_HIDDEN}h, {MLP_EMB}emb, {MLP_DIFFUSION_STEPS} diff steps",
-    f"Training: {MLP_TRAIN_STEPS} steps on {N_ROLLOUTS_PER_POLICY} rollouts/policy",
+    f"Training: {MLP_TRAIN_STEPS} steps on 80-100 existing rollouts/policy",
     f"Guidance: action_scale={ACTION_SCALE}, normalize_grad=True",
     "",
     f"Gradient cosine sim (Small MLP): {mean_cos:.4f}",
@@ -740,7 +724,7 @@ else:
 
 lines += [
     "",
-    f"Rollout collection: {total_collect:.0f}s",
+    f"Rollout loading: {total_collect:.0f}s",
     f"MLP training: {total_train:.0f}s",
     f"Generation: {total_gen:.0f}s",
 ]
