@@ -215,3 +215,19 @@ Using `log_prob_extended` (what SOPE actually uses for guidance):
 **Primary bottleneck for Lift:** Scorer indistinguishability (cosine 0.72–0.95 vs Hopper's 0.64). The robomimic BC policies produce nearly parallel gradient directions. The gap narrows when using the same scoring function SOPE uses, but remains significant. This is not an implementation bug — it's a domain mismatch. SOPE's guidance assumes target policies produce distinguishable action distributions. BC policies trained on the same demonstrations violate that assumption.
 
 **Key insight on scoring function:** SOPE deliberately uses a simplified scoring function (`log_prob_extended`) that trades gradient diversity (higher cosine sim) for numerical stability (|grad|/|action| ≈ 1.5 vs 573). This is a design choice — the learned std provides more distinguishable gradients but with catastrophically large magnitudes. The NLL spread also collapses with `log_prob_extended` (1.2x vs 22x), confirming guidance works purely through directional signal, not magnitude.
+
+## Conclusion: Diagnostic 3 (Gradient Direction Test) Is the Smoking Gun
+
+Of all six diagnostics, Diagnostic 3 provides the single most decisive signal about whether guidance-based multi-policy OPE can work in a given domain.
+
+**Hopper diverges (-5.9%). Lift converges (+72%). This is the entire story.**
+
+When you run gradient ascent on a target policy's scoring function starting from the behavior policy's actions, there are two possible outcomes:
+
+1. **Divergence** (actions move *away* from behavior data): The target policy wants fundamentally different actions than the behavior policy. Guidance will push synthetic trajectories toward policy-specific regions of action space. Different target policies diverge in different directions → guidance produces distinguishable trajectories → OPE can rank policies. This is the Hopper regime.
+
+2. **Convergence** (actions move *toward* behavior data): All target policies agree on what the "right" action is — and it's the same action the behavior policy already takes. Guidance pushes every target policy's trajectories to the same place. No matter which policy you condition on, you get the same synthetic rollouts → OPE cannot rank policies. This is the Lift regime.
+
+The other diagnostics quantify *how much* the policies differ (cosine sim, KL, W1), but Diagnostic 3 answers the binary question: **does guidance move actions in policy-specific directions, or does it collapse them to a shared optimum?** A +72% convergence rate means all six Lift BC policies share essentially the same action landscape — gradient ascent on *any* of them leads to the same basin. The policies are not just similar; they are functionally identical from the perspective of gradient-based guidance.
+
+This has a clear implication for next steps: guidance-based multi-policy OPE on Lift requires target policies that *disagree* on actions — i.e., policies trained with different objectives (RL vs BC), not just different amounts of the same demonstration data.
