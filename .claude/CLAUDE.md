@@ -205,7 +205,10 @@ The `experiments/` directory stores experiment notebooks, organized by date (`YY
 - `experiments/` holds dated experiment notebooks (e.g., `experiments/2026-03-09/latent_sope_5_rollouts.ipynb`)
 - **Output rule:** Notebooks should display all figures and results inline (plt.show(), print). Do NOT save PNGs, JSONs, or other output files — all outputs live inside the executed notebook itself.
 - **Visual debugging:** Every experiment notebook must include plots of actual trajectories (real vs synthetic, per key dimension like cube_z, eef_z, etc.) so the user can visually inspect and debug trajectory quality.
-- **Persistence rule:** Always save trajectory rollouts (e.g., .h5/.npz) to `rollouts/` and trained model checkpoints (e.g., .pt) to `diffusion_ckpts/`. These are expensive to regenerate and should be reusable across experiments. Both directories are gitignored.
+- **Persistence rule (MANDATORY):** Every notebook that trains models or collects rollouts MUST save them to disk. No exceptions — never leave weights or rollout data only in memory.
+  - Save trained model weights (`.pt`) to `diffusion_ckpts/`. Include model config (dims, hyperparams) in the saved dict so models can be reconstructed without the notebook.
+  - Save rollout trajectories (`.h5`) to `rollouts/`. Use the same format as `save_rollout_latents()` (latents, actions, rewards, dones, attrs for success/total_reward/horizon/frame_stack).
+  - These are expensive to regenerate and must be reusable across experiments. Both directories are gitignored.
 - **Pre-submit check:** Before submitting a notebook to SLURM, rigorously verify it won't crash: check all imports resolve, API calls match actual method signatures (e.g., EMA.update vs update_model_average), file paths exist, shapes align, and configs are consistent. SLURM jobs waste GPU hours and queue time when they fail.
 
 ## Results Lab Notebook
