@@ -375,6 +375,11 @@ def build_env_from_checkpoint(
     env_name: Optional[str] = None,
 ) -> EnvBase:
     """Reconstruct a robomimic environment from a checkpoint."""
+    # Initialize obs modality mappings (needed before env.reset() can classify obs keys)
+    config, _ = FileUtils.config_from_checkpoint(
+        algo_name=ckpt.ckpt_dict["algo_name"], ckpt_dict=ckpt.ckpt_dict, verbose=False
+    )
+    ObsUtils.initialize_obs_utils_with_config(config)
     env, _ = FileUtils.env_from_checkpoint(
         ckpt_dict=ckpt.ckpt_dict,
         env_name=env_name,
