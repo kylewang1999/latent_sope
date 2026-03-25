@@ -1,0 +1,69 @@
+[NbConvertApp] Converting notebook experiments/2026-03-17/addressing_action_diversity.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# Find the CQL checkpoint that was just saved
+import glob
+
+cql_output_dir = cql_cfg.train.output_dir
+cql_run_dirs = sorted(glob.glob(os.path.join(cql_output_dir, "*", "models")), key=os.path.getmtime)
+assert len(cql_run_dirs) > 0, f"No CQL checkpoints found in {cql_output_dir}"
+cql_models_dir = cql_run_dirs[-1]
+cql_run_dir = os.path.dirname(cql_models_dir)
+cql_ckpts = sorted(glob.glob(os.path.join(cql_models_dir, "model_epoch_*.pth")))
+print(f"CQL run dir: {cql_run_dir}")
+print(f"CQL checkpoints saved: {len(cql_ckpts)}")
+for c in cql_ckpts:
+    print(f"  {os.path.basename(c)}")
+------------------
+
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mAssertionError[0m                            Traceback (most recent call last)
+Cell [0;32mIn[4], line 6[0m
+[1;32m      4[0m cql_output_dir [38;5;241m=[39m cql_cfg[38;5;241m.[39mtrain[38;5;241m.[39moutput_dir
+[1;32m      5[0m cql_run_dirs [38;5;241m=[39m [38;5;28msorted[39m(glob[38;5;241m.[39mglob(os[38;5;241m.[39mpath[38;5;241m.[39mjoin(cql_output_dir, [38;5;124m"[39m[38;5;124m*[39m[38;5;124m"[39m, [38;5;124m"[39m[38;5;124mmodels[39m[38;5;124m"[39m)), key[38;5;241m=[39mos[38;5;241m.[39mpath[38;5;241m.[39mgetmtime)
+[0;32m----> 6[0m [38;5;28;01massert[39;00m [38;5;28mlen[39m(cql_run_dirs) [38;5;241m>[39m [38;5;241m0[39m, [38;5;124mf[39m[38;5;124m"[39m[38;5;124mNo CQL checkpoints found in [39m[38;5;132;01m{[39;00mcql_output_dir[38;5;132;01m}[39;00m[38;5;124m"[39m
+[1;32m      7[0m cql_models_dir [38;5;241m=[39m cql_run_dirs[[38;5;241m-[39m[38;5;241m1[39m]
+[1;32m      8[0m cql_run_dir [38;5;241m=[39m os[38;5;241m.[39mpath[38;5;241m.[39mdirname(cql_models_dir)
+
+[0;31mAssertionError[0m: No CQL checkpoints found in /home1/reishuen/latent_sope/third_party/robomimic/diffusion_policy_trained_models/lift_cql_200demos
+

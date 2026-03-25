@@ -1,0 +1,170 @@
+[NbConvertApp] Converting notebook experiments/2026-03-17/bc_gaussian_oracle_sr.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Create Lift environment from existing robomimic checkpoint ──
+from src.latent_sope.robomimic_interface.checkpoints import load_checkpoint, build_env_from_checkpoint
+
+ckpt = load_checkpoint(CKPT_RUN_DIR)
+env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
+print(f"Env created: {type(env)}")
+
+# Quick sanity check: reset and inspect obs keys
+test_obs = env.reset()
+print(f"Obs keys: {sorted(test_obs.keys())}")
+for k in OBS_KEYS:
+    print(f"  {k}: shape={test_obs[k].shape}")
+
+# Verify obs concatenation matches STATE_DIM
+concat_dim = sum(test_obs[k].shape[-1] for k in OBS_KEYS)
+assert concat_dim == STATE_DIM, f"Expected {STATE_DIM}, got {concat_dim}"
+print(f"\nConcatenated obs dim: {concat_dim} (matches STATE_DIM={STATE_DIM})")
+------------------
+
+----- stderr -----
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+----- stderr -----
+[1mCLIPTextModelWithProjection LOAD REPORT[0m from: openai/clip-vit-large-patch14
+Key                                                            | Status     |  | 
+---------------------------------------------------------------+------------+--+-
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.bias   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.weight | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.bias          | UNEXPECTED |  | 
+vision_model.pre_layrnorm.weight                               | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.weight   | UNEXPECTED |  | 
+logit_scale                                                    | UNEXPECTED |  | 
+vision_model.post_layernorm.bias                               | UNEXPECTED |  | 
+vision_model.embeddings.position_ids                           | UNEXPECTED |  | 
+vision_model.post_layernorm.weight                             | UNEXPECTED |  | 
+vision_model.embeddings.position_embedding.weight              | UNEXPECTED |  | 
+visual_projection.weight                                       | UNEXPECTED |  | 
+vision_model.pre_layrnorm.bias                                 | UNEXPECTED |  | 
+vision_model.embeddings.patch_embedding.weight                 | UNEXPECTED |  | 
+text_model.embeddings.position_ids                             | UNEXPECTED |  | 
+vision_model.embeddings.class_embedding                        | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+----- stderr -----
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+----- stderr -----
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mNo private macro file found! (macros.py:57)
+----- stderr -----
+WARNING:robosuite_logs:No private macro file found!
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mIt is recommended to use a private macro file (macros.py:58)
+----- stderr -----
+WARNING:robosuite_logs:It is recommended to use a private macro file
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mTo setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py (macros.py:59)
+----- stderr -----
+WARNING:robosuite_logs:To setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mCould not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install. (__init__.py:30)
+----- stderr -----
+WARNING:robosuite_logs:Could not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install.
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mCould not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot. (__init__.py:40)
+----- stderr -----
+WARNING:robosuite_logs:Could not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot.
+----- stdout -----
+Created environment with name Lift
+Action size is 7
+[33mROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)[0m
+----- stdout -----
+Env created: <class 'robomimic.envs.wrappers.FrameStackWrapper'>
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mTypeError[0m                                 Traceback (most recent call last)
+Cell [0;32mIn[4], line 9[0m
+[1;32m      6[0m [38;5;28mprint[39m([38;5;124mf[39m[38;5;124m"[39m[38;5;124mEnv created: [39m[38;5;132;01m{[39;00m[38;5;28mtype[39m(env)[38;5;132;01m}[39;00m[38;5;124m"[39m)
+[1;32m      8[0m [38;5;66;03m# Quick sanity check: reset and inspect obs keys[39;00m
+[0;32m----> 9[0m test_obs [38;5;241m=[39m [43menv[49m[38;5;241;43m.[39;49m[43mreset[49m[43m([49m[43m)[49m
+[1;32m     10[0m [38;5;28mprint[39m([38;5;124mf[39m[38;5;124m"[39m[38;5;124mObs keys: [39m[38;5;132;01m{[39;00m[38;5;28msorted[39m(test_obs[38;5;241m.[39mkeys())[38;5;132;01m}[39;00m[38;5;124m"[39m)
+[1;32m     11[0m [38;5;28;01mfor[39;00m k [38;5;129;01min[39;00m OBS_KEYS:
+
+File [0;32m~/latent_sope/third_party/robomimic/robomimic/envs/wrappers.py:162[0m, in [0;36mFrameStackWrapper.reset[0;34m(self)[0m
+[1;32m    152[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21mreset[39m([38;5;28mself[39m):
+[1;32m    153[0m [38;5;250m    [39m[38;5;124;03m"""[39;00m
+[1;32m    154[0m [38;5;124;03m    Modify to return frame stacked observation which is @self.num_frames copies of [39;00m
+[1;32m    155[0m [38;5;124;03m    the initial observation.[39;00m
+[0;32m   (...)[0m
+[1;32m    160[0m [38;5;124;03m            observations[39;00m
+[1;32m    161[0m [38;5;124;03m    """[39;00m
+[0;32m--> 162[0m     obs [38;5;241m=[39m [38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43menv[49m[38;5;241;43m.[39;49m[43mreset[49m[43m([49m[43m)[49m
+[1;32m    163[0m     [38;5;28mself[39m[38;5;241m.[39mtimestep [38;5;241m=[39m [38;5;241m0[39m  [38;5;66;03m# always zero regardless of timestep type[39;00m
+[1;32m    164[0m     [38;5;28mself[39m[38;5;241m.[39mupdate_obs(obs, reset[38;5;241m=[39m[38;5;28;01mTrue[39;00m)
+
+File [0;32m~/latent_sope/third_party/robomimic/robomimic/envs/env_robosuite.py:160[0m, in [0;36mEnvRobosuite.reset[0;34m(self, unset_ep_meta)[0m
+[1;32m    158[0m     [38;5;28mself[39m[38;5;241m.[39menv[38;5;241m.[39munset_ep_meta()
+[1;32m    159[0m di [38;5;241m=[39m [38;5;28mself[39m[38;5;241m.[39menv[38;5;241m.[39mreset()
+[0;32m--> 160[0m [38;5;28;01mreturn[39;00m [38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43mget_observation[49m[43m([49m[43mdi[49m[43m)[49m
+
+File [0;32m~/latent_sope/third_party/robomimic/robomimic/envs/env_robosuite.py:253[0m, in [0;36mEnvRobosuite.get_observation[0;34m(self, di)[0m
+[1;32m    251[0m ret [38;5;241m=[39m {}
+[1;32m    252[0m [38;5;28;01mfor[39;00m k [38;5;129;01min[39;00m di:
+[0;32m--> 253[0m     [38;5;28;01mif[39;00m ([43mk[49m[43m [49m[38;5;129;43;01min[39;49;00m[43m [49m[43mObsUtils[49m[38;5;241;43m.[39;49m[43mOBS_KEYS_TO_MODALITIES[49m) [38;5;129;01mand[39;00m ObsUtils[38;5;241m.[39mkey_is_obs_modality(key[38;5;241m=[39mk, obs_modality[38;5;241m=[39m[38;5;124m"[39m[38;5;124mrgb[39m[38;5;124m"[39m):
+[1;32m    254[0m         [38;5;66;03m# by default images from mujoco are flipped in height[39;00m
+[1;32m    255[0m         ret[k] [38;5;241m=[39m di[k][::[38;5;241m-[39m[38;5;241m1[39m][38;5;241m.[39mcopy()
+[1;32m    256[0m     [38;5;28;01melif[39;00m (k [38;5;129;01min[39;00m ObsUtils[38;5;241m.[39mOBS_KEYS_TO_MODALITIES) [38;5;129;01mand[39;00m ObsUtils[38;5;241m.[39mkey_is_obs_modality(key[38;5;241m=[39mk, obs_modality[38;5;241m=[39m[38;5;124m"[39m[38;5;124mdepth[39m[38;5;124m"[39m):
+[1;32m    257[0m         [38;5;66;03m# by default depth images from mujoco are flipped in height[39;00m
+
+[0;31mTypeError[0m: argument of type 'NoneType' is not iterable
+

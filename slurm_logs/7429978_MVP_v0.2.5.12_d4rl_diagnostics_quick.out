@@ -1,0 +1,12 @@
+==========================================
+SLURM_JOB_ID = 7429978
+SLURM_JOB_NODELIST = d14-04
+TMPDIR = /tmp/SLURM_7429978
+==========================================
+=== SLURM Job Info ===
+Job ID:    7429978
+Node:      d14-04.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Notebook:  experiments/2026-03-17/MVP_v0.2.5.12_d4rl_diagnostics_quick.ipynb
+Started:   Tue Mar 17 11:05:06 PDT 2026
+======================

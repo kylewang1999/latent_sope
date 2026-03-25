@@ -1,0 +1,128 @@
+[NbConvertApp] Converting notebook experiments/2026-03-17/bc_gaussian_oracle_sr.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Create Lift environment from existing robomimic checkpoint ──
+from src.latent_sope.robomimic_interface.checkpoints import load_checkpoint, build_env_from_checkpoint
+
+ckpt = load_checkpoint(CKPT_RUN_DIR)
+env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
+print(f"Env created: {type(env)}")
+
+# Quick sanity check: reset and inspect obs keys
+test_obs = env.reset()
+print(f"Obs keys: {sorted(test_obs.keys())}")
+for k in OBS_KEYS:
+    print(f"  {k}: shape={test_obs[k].shape}")
+
+# Verify obs concatenation matches STATE_DIM
+concat_dim = sum(test_obs[k].shape[-1] for k in OBS_KEYS)
+assert concat_dim == STATE_DIM, f"Expected {STATE_DIM}, got {concat_dim}"
+print(f"\nConcatenated obs dim: {concat_dim} (matches STATE_DIM={STATE_DIM})")
+------------------
+
+----- stderr -----
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+----- stderr -----
+[1mCLIPTextModelWithProjection LOAD REPORT[0m from: openai/clip-vit-large-patch14
+Key                                                            | Status     |  | 
+---------------------------------------------------------------+------------+--+-
+vision_model.encoder.layers.{0...23}.mlp.fc1.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.bias   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.weight | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.bias          | UNEXPECTED |  | 
+vision_model.embeddings.position_embedding.weight              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.weight            | UNEXPECTED |  | 
+text_model.embeddings.position_ids                             | UNEXPECTED |  | 
+visual_projection.weight                                       | UNEXPECTED |  | 
+vision_model.post_layernorm.bias                               | UNEXPECTED |  | 
+vision_model.pre_layrnorm.weight                               | UNEXPECTED |  | 
+logit_scale                                                    | UNEXPECTED |  | 
+vision_model.embeddings.patch_embedding.weight                 | UNEXPECTED |  | 
+vision_model.embeddings.class_embedding                        | UNEXPECTED |  | 
+vision_model.pre_layrnorm.bias                                 | UNEXPECTED |  | 
+vision_model.embeddings.position_ids                           | UNEXPECTED |  | 
+vision_model.post_layernorm.weight                             | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+----- stderr -----
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+----- stderr -----
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mFileNotFoundError[0m                         Traceback (most recent call last)
+Cell [0;32mIn[4], line 4[0m
+[1;32m      1[0m [38;5;66;03m# ── Create Lift environment from existing robomimic checkpoint ──[39;00m
+[1;32m      2[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01msrc[39;00m[38;5;21;01m.[39;00m[38;5;21;01mlatent_sope[39;00m[38;5;21;01m.[39;00m[38;5;21;01mrobomimic_interface[39;00m[38;5;21;01m.[39;00m[38;5;21;01mcheckpoints[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m load_checkpoint, build_env_from_checkpoint
+[0;32m----> 4[0m ckpt [38;5;241m=[39m [43mload_checkpoint[49m[43m([49m[43mCKPT_RUN_DIR[49m[43m)[49m
+[1;32m      5[0m env [38;5;241m=[39m build_env_from_checkpoint(ckpt, render[38;5;241m=[39m[38;5;28;01mFalse[39;00m, render_offscreen[38;5;241m=[39m[38;5;28;01mFalse[39;00m, verbose[38;5;241m=[39m[38;5;28;01mFalse[39;00m)
+[1;32m      6[0m [38;5;28mprint[39m([38;5;124mf[39m[38;5;124m"[39m[38;5;124mEnv created: [39m[38;5;132;01m{[39;00m[38;5;28mtype[39m(env)[38;5;132;01m}[39;00m[38;5;124m"[39m)
+
+File [0;32m~/latent_sope/src/latent_sope/robomimic_interface/checkpoints.py:245[0m, in [0;36mload_checkpoint[0;34m(run_dir, ckpt_path, map_location)[0m
+[1;32m    243[0m run_dir [38;5;241m=[39m Path(run_dir)
+[1;32m    244[0m [38;5;28;01mif[39;00m ckpt_path [38;5;129;01mis[39;00m [38;5;28;01mNone[39;00m:
+[0;32m--> 245[0m     ckpt_path [38;5;241m=[39m [43m_find_latest_checkpoint[49m[43m([49m[43mrun_dir[49m[43m)[49m
+[1;32m    246[0m ckpt_path [38;5;241m=[39m run_dir [38;5;241m/[39m ckpt_path
+[1;32m    248[0m ckpt_dict [38;5;241m=[39m _load_ckpt_dict_robomimic(ckpt_path)
+
+File [0;32m~/latent_sope/src/latent_sope/robomimic_interface/checkpoints.py:159[0m, in [0;36m_find_latest_checkpoint[0;34m(run_dir, models_subdir)[0m
+[1;32m    157[0m candidates [38;5;241m=[39m [38;5;28msorted[39m({[38;5;241m*[39mmodels_dir[38;5;241m.[39mglob([38;5;124m"[39m[38;5;124m*.pth[39m[38;5;124m"[39m), [38;5;241m*[39mmodels_dir[38;5;241m.[39mglob([38;5;124m"[39m[38;5;124m*.pt[39m[38;5;124m"[39m)})
+[1;32m    158[0m [38;5;28;01mif[39;00m [38;5;129;01mnot[39;00m candidates:
+[0;32m--> 159[0m     [38;5;28;01mraise[39;00m [38;5;167;01mFileNotFoundError[39;00m([38;5;124mf[39m[38;5;124m"[39m[38;5;124mno checkpoints found under: [39m[38;5;132;01m{[39;00mmodels_dir[38;5;132;01m}[39;00m[38;5;124m"[39m)
+[1;32m    161[0m scored [38;5;241m=[39m []
+[1;32m    162[0m [38;5;28;01mfor[39;00m p [38;5;129;01min[39;00m candidates:
+
+[0;31mFileNotFoundError[0m: no checkpoints found under: /home1/reishuen/latent_sope/third_party/robomimic/diffusion_policy_trained_models/test/20260309132349/models
+

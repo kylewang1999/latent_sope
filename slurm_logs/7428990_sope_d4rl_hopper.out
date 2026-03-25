@@ -1,0 +1,13 @@
+==========================================
+SLURM_JOB_ID = 7428990
+SLURM_JOB_NODELIST = d14-07
+TMPDIR = /tmp/SLURM_7428990
+==========================================
+=== SLURM Job Info ===
+Job ID:    7428990
+Node:      d14-07.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Started:   Tue Mar 17 18:00:18 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python

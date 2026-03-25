@@ -1,0 +1,15 @@
+==========================================
+SLURM_JOB_ID = 7451186
+SLURM_JOB_NODELIST = d13-06
+TMPDIR = /tmp/SLURM_7451186
+==========================================
+=== SLURM Job Info ===
+Job ID:    7451186
+Node:      d13-06.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Notebook:  experiments/2026-03-17/addressing_action_diversity.ipynb
+Started:   Wed Mar 18 10:35:21 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Using jupyter: /home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python

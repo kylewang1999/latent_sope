@@ -1,0 +1,47 @@
+Loading weights:   0%|          | 0/197 [00:00<?, ?it/s]Loading weights:   2%|▏         | 3/197 [00:00<00:13, 14.38it/s]Loading weights:   4%|▍         | 8/197 [00:00<00:09, 19.61it/s]Loading weights:   8%|▊         | 15/197 [00:00<00:07, 25.44it/s]Loading weights:   9%|▉         | 18/197 [00:00<00:09, 19.41it/s]Loading weights:  14%|█▎        | 27/197 [00:01<00:06, 25.51it/s]Loading weights:  16%|█▌        | 32/197 [00:01<00:09, 18.15it/s]Loading weights:  23%|██▎       | 45/197 [00:01<00:05, 27.36it/s]Loading weights:  25%|██▍       | 49/197 [00:02<00:06, 23.85it/s]Loading weights:  26%|██▋       | 52/197 [00:02<00:07, 20.44it/s]Loading weights:  31%|███       | 61/197 [00:02<00:05, 24.77it/s]Loading weights:  32%|███▏      | 64/197 [00:02<00:06, 20.91it/s]Loading weights:  34%|███▍      | 67/197 [00:03<00:07, 18.18it/s]Loading weights:  40%|████      | 79/197 [00:03<00:04, 26.74it/s]Loading weights:  42%|████▏     | 82/197 [00:03<00:05, 22.26it/s]Loading weights:  45%|████▍     | 88/197 [00:03<00:04, 22.60it/s]Loading weights:  48%|████▊     | 94/197 [00:04<00:04, 22.86it/s]Loading weights:  49%|████▉     | 97/197 [00:04<00:05, 19.41it/s]Loading weights:  50%|█████     | 99/197 [00:04<00:06, 16.03it/s]Loading weights:  55%|█████▌    | 109/197 [00:04<00:03, 22.92it/s]Loading weights:  57%|█████▋    | 112/197 [00:05<00:05, 15.01it/s]Loading weights:  58%|█████▊    | 114/197 [00:05<00:06, 13.28it/s]Loading weights:  62%|██████▏   | 123/197 [00:05<00:03, 19.01it/s]Loading weights:  64%|██████▍   | 126/197 [00:06<00:04, 17.01it/s]Loading weights:  68%|██████▊   | 134/197 [00:06<00:02, 21.01it/s]Loading weights:  71%|███████   | 139/197 [00:06<00:02, 20.50it/s]Loading weights:  72%|███████▏  | 142/197 [00:06<00:02, 18.91it/s]Loading weights:  73%|███████▎  | 144/197 [00:07<00:03, 15.67it/s]Loading weights:  79%|███████▊  | 155/197 [00:07<00:01, 23.99it/s]Loading weights:  80%|████████  | 158/197 [00:07<00:01, 20.16it/s]Loading weights:  82%|████████▏ | 161/197 [00:07<00:02, 17.69it/s]Loading weights:  85%|████████▌ | 168/197 [00:08<00:01, 20.52it/s]Loading weights:  87%|████████▋ | 171/197 [00:08<00:01, 17.87it/s]Loading weights:  88%|████████▊ | 173/197 [00:08<00:01, 14.92it/s]Loading weights: 100%|██████████| 197/197 [00:08<00:00, 22.53it/s]
+[1mCLIPTextModelWithProjection LOAD REPORT[0m from: openai/clip-vit-large-patch14
+Key                                                            | Status     |  | 
+---------------------------------------------------------------+------------+--+-
+vision_model.encoder.layers.{0...23}.layer_norm1.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.bias   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.weight | UNEXPECTED |  | 
+logit_scale                                                    | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.bias              | UNEXPECTED |  | 
+vision_model.embeddings.class_embedding                        | UNEXPECTED |  | 
+vision_model.embeddings.patch_embedding.weight                 | UNEXPECTED |  | 
+vision_model.embeddings.position_ids                           | UNEXPECTED |  | 
+vision_model.embeddings.position_embedding.weight              | UNEXPECTED |  | 
+vision_model.post_layernorm.weight                             | UNEXPECTED |  | 
+vision_model.post_layernorm.bias                               | UNEXPECTED |  | 
+vision_model.pre_layrnorm.weight                               | UNEXPECTED |  | 
+text_model.embeddings.position_ids                             | UNEXPECTED |  | 
+vision_model.pre_layrnorm.bias                                 | UNEXPECTED |  | 
+visual_projection.weight                                       | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+[robosuite WARNING] No private macro file found! (macros.py:57)
+WARNING:robosuite_logs:No private macro file found!
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:58)
+WARNING:robosuite_logs:It is recommended to use a private macro file
+[robosuite WARNING] To setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py (macros.py:59)
+WARNING:robosuite_logs:To setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py
+[robosuite WARNING] Could not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install. (__init__.py:30)
+WARNING:robosuite_logs:Could not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install.
+[robosuite WARNING] Could not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot. (__init__.py:40)
+WARNING:robosuite_logs:Could not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot.

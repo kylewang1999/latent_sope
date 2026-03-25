@@ -1,0 +1,17 @@
+==========================================
+SLURM_JOB_ID = 7439619
+SLURM_JOB_NODELIST = d13-05
+TMPDIR = /tmp/SLURM_7439619
+==========================================
+=== SLURM Job Info ===
+Job ID:    7439619
+Node:      d13-05.hpc.usc.edu
+GPU:       Tesla V100-PCIE-32GB
+Notebook:  experiments/2026-03-17/hopper_d4rl_diagnostics_guided.ipynb
+Started:   Wed Mar 18 01:36:41 PDT 2026
+======================
+[activate] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl MUJOCO_EGL_DEVICE_ID=0
+Using jupyter: /home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter
+Python: /home1/reishuen/miniconda3/envs/latent_sope/bin/python
+
+=== DONE: Wed Mar 18 02:13:22 PDT 2026 ===

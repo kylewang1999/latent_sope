@@ -1,0 +1,222 @@
+[NbConvertApp] Converting notebook experiments/2026-03-17/bc_gaussian_oracle_sr.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Oracle rollouts for each BC_Gaussian policy ──
+
+def obs_dict_to_tensor(obs_dict, obs_keys, dev):
+    """Concatenate obs dict into a (1, STATE_DIM) tensor for the policy."""
+    parts = [np.asarray(obs_dict[k], dtype=np.float32).flatten() for k in obs_keys]
+    vec = np.concatenate(parts)
+    return torch.tensor(vec, dtype=torch.float32, device=dev).unsqueeze(0)
+
+def obs_dict_to_latent(obs_dict, obs_keys):
+    """Concatenate obs dict into a (STATE_DIM,) numpy array."""
+    return np.concatenate([np.asarray(obs_dict[k], dtype=np.float32).flatten() for k in obs_keys])
+
+def rollout_bc_gaussian(policy, env, horizon, obs_keys, dev):
+    """Run one rollout with a GaussianPolicy in the Lift env. Records full trajectory."""
+    obs = env.reset()
+    state_dict = env.get_state()
+    obs = env.reset_to(state_dict)
+    
+    total_reward = 0.0
+    success = False
+    latents_list = []
+    actions_list = []
+    rewards_list = []
+    dones_list = []
+    
+    for step_i in range(horizon):
+        latents_list.append(obs_dict_to_latent(obs, obs_keys))
+        obs_t = obs_dict_to_tensor(obs, obs_keys, dev)
+        action = policy.sample_action(obs_t).squeeze(0).cpu().numpy()
+        actions_list.append(action)
+        
+        next_obs, reward, done, info = env.step(action)
+        total_reward += reward
+        rewards_list.append(reward)
+        success = env.is_success()["task"]
+        dones_list.append(done or success)
+        
+        if done or success:
+            # Record terminal obs so success state is captured
+            latents_list.append(obs_dict_to_latent(next_obs, obs_keys))
+            break
+        obs = deepcopy(next_obs)
+    
+    return {
+        "total_reward": total_reward,
+        "success": success,
+        "steps": step_i + 1,
+        "latents": np.array(latents_list, dtype=np.float32),
+        "actions": np.array(actions_list, dtype=np.float32),
+        "rewards": np.array(rewards_list, dtype=np.float32),
+        "dones": np.array(dones_list, dtype=np.bool_),
+    }
+
+# Run oracle rollouts
+print(f"Running {NUM_ROLLOUTS} oracle rollouts per policy (horizon={HORIZON})...")
+print(f"Estimated time: ~{NUM_ROLLOUTS * len(TARGETS) * 15 / 60:.0f} min\n")
+
+oracle_results = {}
+all_trajectories = {}  # name -> list of rollout dicts
+t0_all = time.time()
+
+for tgt in TARGETS:
+    name = tgt["name"]
+    policy = bc_policies[name]
+    policy.eval()
+    
+    print(f"  {name:<22}", end=" ", flush=True)
+    t0 = time.time()
+    
+    successes = []
+    rewards = []
+    trajectories = []
+    for i in range(NUM_ROLLOUTS):
+        result = rollout_bc_gaussian(policy, env, HORIZON, OBS_KEYS, device)
+        successes.append(result["success"])
+        rewards.append(result["total_reward"])
+        trajectories.append(result)
+        if (i + 1) % 10 == 0:
+            print(f"[{i+1}]", end="", flush=True)
+    
+    sr = np.mean(successes)
+    mean_reward = np.mean(rewards)
+    oracle_results[name] = {
+        "success_rate": sr,
+        "mean_reward": mean_reward,
+        "std_reward": np.std(rewards),
+        "successes": successes,
+        "rewards": rewards,
+    }
+    all_trajectories[name] = trajectories
+    elapsed = time.time() - t0
+    print(f" SR={sr*100:.0f}%, reward={mean_reward:.1f}, {elapsed:.0f}s")
+
+total_time = time.time() - t0_all
+print(f"\nTotal rollout time: {total_time:.0f}s ({total_time/60:.1f} min)")
+------------------
+
+----- stdout -----
+Running 50 oracle rollouts per policy (horizon=60)...
+Estimated time: ~75 min
+
+  bc_10demos_e50
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mRuntimeError[0m                              Traceback (most recent call last)
+Cell [0;32mIn[5], line 74[0m
+[1;32m     72[0m trajectories [38;5;241m=[39m []
+[1;32m     73[0m [38;5;28;01mfor[39;00m i [38;5;129;01min[39;00m [38;5;28mrange[39m(NUM_ROLLOUTS):
+[0;32m---> 74[0m     result [38;5;241m=[39m [43mrollout_bc_gaussian[49m[43m([49m[43mpolicy[49m[43m,[49m[43m [49m[43menv[49m[43m,[49m[43m [49m[43mHORIZON[49m[43m,[49m[43m [49m[43mOBS_KEYS[49m[43m,[49m[43m [49m[43mdevice[49m[43m)[49m
+[1;32m     75[0m     successes[38;5;241m.[39mappend(result[[38;5;124m"[39m[38;5;124msuccess[39m[38;5;124m"[39m])
+[1;32m     76[0m     rewards[38;5;241m.[39mappend(result[[38;5;124m"[39m[38;5;124mtotal_reward[39m[38;5;124m"[39m])
+
+Cell [0;32mIn[5], line 29[0m, in [0;36mrollout_bc_gaussian[0;34m(policy, env, horizon, obs_keys, dev)[0m
+[1;32m     27[0m latents_list[38;5;241m.[39mappend(obs_dict_to_latent(obs, obs_keys))
+[1;32m     28[0m obs_t [38;5;241m=[39m obs_dict_to_tensor(obs, obs_keys, dev)
+[0;32m---> 29[0m action [38;5;241m=[39m [43mpolicy[49m[38;5;241;43m.[39;49m[43msample_action[49m[43m([49m[43mobs_t[49m[43m)[49m[38;5;241m.[39msqueeze([38;5;241m0[39m)[38;5;241m.[39mcpu()[38;5;241m.[39mnumpy()
+[1;32m     30[0m actions_list[38;5;241m.[39mappend(action)
+[1;32m     32[0m next_obs, reward, done, info [38;5;241m=[39m env[38;5;241m.[39mstep(action)
+
+Cell [0;32mIn[2], line 41[0m, in [0;36mGaussianPolicy.sample_action[0;34m(self, obs_tensor)[0m
+[1;32m     39[0m [38;5;250m[39m[38;5;124;03m"""Sample a single action for rollout (no grad)."""[39;00m
+[1;32m     40[0m [38;5;28;01mwith[39;00m torch[38;5;241m.[39mno_grad():
+[0;32m---> 41[0m     mean, std [38;5;241m=[39m [38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43mforward[49m[43m([49m[43mobs_tensor[49m[43m)[49m
+[1;32m     42[0m     dist [38;5;241m=[39m torch[38;5;241m.[39mdistributions[38;5;241m.[39mNormal(mean, std)
+[1;32m     43[0m     [38;5;28;01mreturn[39;00m dist[38;5;241m.[39msample()
+
+Cell [0;32mIn[2], line 27[0m, in [0;36mGaussianPolicy.forward[0;34m(self, obs)[0m
+[1;32m     26[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21mforward[39m([38;5;28mself[39m, obs):
+[0;32m---> 27[0m     h [38;5;241m=[39m [38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43mbackbone[49m[43m([49m[43mobs[49m[43m)[49m
+[1;32m     28[0m     mean [38;5;241m=[39m [38;5;28mself[39m[38;5;241m.[39mmean_head(h)
+[1;32m     29[0m     raw_std [38;5;241m=[39m [38;5;28mself[39m[38;5;241m.[39mlog_std_head(h)
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/nn/modules/module.py:1776[0m, in [0;36mModule._wrapped_call_impl[0;34m(self, *args, **kwargs)[0m
+[1;32m   1774[0m     [38;5;28;01mreturn[39;00m [38;5;28mself[39m[38;5;241m.[39m_compiled_call_impl([38;5;241m*[39margs, [38;5;241m*[39m[38;5;241m*[39mkwargs)  [38;5;66;03m# type: ignore[misc][39;00m
+[1;32m   1775[0m [38;5;28;01melse[39;00m:
+[0;32m-> 1776[0m     [38;5;28;01mreturn[39;00m [38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43m_call_impl[49m[43m([49m[38;5;241;43m*[39;49m[43margs[49m[43m,[49m[43m [49m[38;5;241;43m*[39;49m[38;5;241;43m*[39;49m[43mkwargs[49m[43m)[49m
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/nn/modules/module.py:1787[0m, in [0;36mModule._call_impl[0;34m(self, *args, **kwargs)[0m
+[1;32m   1782[0m [38;5;66;03m# If we don't have any hooks, we want to skip the rest of the logic in[39;00m
+[1;32m   1783[0m [38;5;66;03m# this function, and just call forward.[39;00m
+[1;32m   1784[0m [38;5;28;01mif[39;00m [38;5;129;01mnot[39;00m ([38;5;28mself[39m[38;5;241m.[39m_backward_hooks [38;5;129;01mor[39;00m [38;5;28mself[39m[38;5;241m.[39m_backward_pre_hooks [38;5;129;01mor[39;00m [38;5;28mself[39m[38;5;241m.[39m_forward_hooks [38;5;129;01mor[39;00m [38;5;28mself[39m[38;5;241m.[39m_forward_pre_hooks
+[1;32m   1785[0m         [38;5;129;01mor[39;00m _global_backward_pre_hooks [38;5;129;01mor[39;00m _global_backward_hooks
+[1;32m   1786[0m         [38;5;129;01mor[39;00m _global_forward_hooks [38;5;129;01mor[39;00m _global_forward_pre_hooks):
+[0;32m-> 1787[0m     [38;5;28;01mreturn[39;00m [43mforward_call[49m[43m([49m[38;5;241;43m*[39;49m[43margs[49m[43m,[49m[43m [49m[38;5;241;43m*[39;49m[38;5;241;43m*[39;49m[43mkwargs[49m[43m)[49m
+[1;32m   1789[0m result [38;5;241m=[39m [38;5;28;01mNone[39;00m
+[1;32m   1790[0m called_always_called_hooks [38;5;241m=[39m [38;5;28mset[39m()
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/nn/modules/container.py:253[0m, in [0;36mSequential.forward[0;34m(self, input)[0m
+[1;32m    249[0m [38;5;250m[39m[38;5;124;03m"""[39;00m
+[1;32m    250[0m [38;5;124;03mRuns the forward pass.[39;00m
+[1;32m    251[0m [38;5;124;03m"""[39;00m
+[1;32m    252[0m [38;5;28;01mfor[39;00m module [38;5;129;01min[39;00m [38;5;28mself[39m:
+[0;32m--> 253[0m     [38;5;28minput[39m [38;5;241m=[39m [43mmodule[49m[43m([49m[38;5;28;43minput[39;49m[43m)[49m
+[1;32m    254[0m [38;5;28;01mreturn[39;00m [38;5;28minput[39m
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/nn/modules/module.py:1776[0m, in [0;36mModule._wrapped_call_impl[0;34m(self, *args, **kwargs)[0m
+[1;32m   1774[0m     [38;5;28;01mreturn[39;00m [38;5;28mself[39m[38;5;241m.[39m_compiled_call_impl([38;5;241m*[39margs, [38;5;241m*[39m[38;5;241m*[39mkwargs)  [38;5;66;03m# type: ignore[misc][39;00m
+[1;32m   1775[0m [38;5;28;01melse[39;00m:
+[0;32m-> 1776[0m     [38;5;28;01mreturn[39;00m [38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43m_call_impl[49m[43m([49m[38;5;241;43m*[39;49m[43margs[49m[43m,[49m[43m [49m[38;5;241;43m*[39;49m[38;5;241;43m*[39;49m[43mkwargs[49m[43m)[49m
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/nn/modules/module.py:1787[0m, in [0;36mModule._call_impl[0;34m(self, *args, **kwargs)[0m
+[1;32m   1782[0m [38;5;66;03m# If we don't have any hooks, we want to skip the rest of the logic in[39;00m
+[1;32m   1783[0m [38;5;66;03m# this function, and just call forward.[39;00m
+[1;32m   1784[0m [38;5;28;01mif[39;00m [38;5;129;01mnot[39;00m ([38;5;28mself[39m[38;5;241m.[39m_backward_hooks [38;5;129;01mor[39;00m [38;5;28mself[39m[38;5;241m.[39m_backward_pre_hooks [38;5;129;01mor[39;00m [38;5;28mself[39m[38;5;241m.[39m_forward_hooks [38;5;129;01mor[39;00m [38;5;28mself[39m[38;5;241m.[39m_forward_pre_hooks
+[1;32m   1785[0m         [38;5;129;01mor[39;00m _global_backward_pre_hooks [38;5;129;01mor[39;00m _global_backward_hooks
+[1;32m   1786[0m         [38;5;129;01mor[39;00m _global_forward_hooks [38;5;129;01mor[39;00m _global_forward_pre_hooks):
+[0;32m-> 1787[0m     [38;5;28;01mreturn[39;00m [43mforward_call[49m[43m([49m[38;5;241;43m*[39;49m[43margs[49m[43m,[49m[43m [49m[38;5;241;43m*[39;49m[38;5;241;43m*[39;49m[43mkwargs[49m[43m)[49m
+[1;32m   1789[0m result [38;5;241m=[39m [38;5;28;01mNone[39;00m
+[1;32m   1790[0m called_always_called_hooks [38;5;241m=[39m [38;5;28mset[39m()
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/nn/modules/linear.py:134[0m, in [0;36mLinear.forward[0;34m(self, input)[0m
+[1;32m    130[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21mforward[39m([38;5;28mself[39m, [38;5;28minput[39m: Tensor) [38;5;241m-[39m[38;5;241m>[39m Tensor:
+[1;32m    131[0m [38;5;250m    [39m[38;5;124;03m"""[39;00m
+[1;32m    132[0m [38;5;124;03m    Runs the forward pass.[39;00m
+[1;32m    133[0m [38;5;124;03m    """[39;00m
+[0;32m--> 134[0m     [38;5;28;01mreturn[39;00m [43mF[49m[38;5;241;43m.[39;49m[43mlinear[49m[43m([49m[38;5;28;43minput[39;49m[43m,[49m[43m [49m[38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43mweight[49m[43m,[49m[43m [49m[38;5;28;43mself[39;49m[38;5;241;43m.[39;49m[43mbias[49m[43m)[49m
+
+[0;31mRuntimeError[0m: mat1 and mat2 shapes cannot be multiplied (1x38 and 19x256)
+

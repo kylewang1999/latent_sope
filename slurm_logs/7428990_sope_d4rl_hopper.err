@@ -1,0 +1,18 @@
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+WARNING:absl:Tensorflow library not found, tensorflow.io.gfile operations will use native shim calls. GCS paths (i.e. 'gs://...') cannot be accessed.
+Traceback (most recent call last):
+  File "/home1/reishuen/latent_sope/third_party/sope/opelab/examples/d4rl/main_full.py", line 168, in <module>
+    main(args.config, args.device)
+  File "/home1/reishuen/latent_sope/third_party/sope/opelab/examples/d4rl/main_full.py", line 45, in main
+    env = gym.make(env_name)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/gym/envs/registration.py", line 676, in make
+    return registry.make(id, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/gym/envs/registration.py", line 490, in make
+    versions = self.env_specs.versions(namespace, name)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/gym/envs/registration.py", line 220, in versions
+    self._assert_name_exists(namespace, name)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/gym/envs/registration.py", line 297, in _assert_name_exists
+    raise error.NameNotFound(message)
+gym.error.NameNotFound: Environment `hopper-medium` doesn't exist.
