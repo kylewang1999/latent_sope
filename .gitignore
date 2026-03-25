@@ -13,3 +13,5 @@ logs*/
 
 rollouts/
 diffusion_ckpts/
+slurm_logs/7439624_sope_d4rl_hopper.out
+slurm_logs/7451190_sope_d4rl_hopper.out

@@ -1,0 +1,208 @@
+[NbConvertApp] Converting notebook experiments/2026-03-25/MVP_v0.2.5.14_fixed_guidance.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Loop over target policies: generate guided trajectories ──
+results = {}
+t0_all = time.time()
+
+for i, pol in enumerate(TARGET_POLICIES):
+    name = pol["name"]
+    oracle_sr = oracle_sr_map[name]
+    run_dir = CKPT_BASE / pol["dir"]
+    ckpt_file = pol["ckpt"]
+
+    print(f"\n[{i+1}/{len(TARGET_POLICIES)}] {name} (oracle={oracle_sr*100:.0f}%)")
+
+    # Load target policy
+    print(f"  Loading checkpoint...", end=" ", flush=True)
+    t0 = time.time()
+    ckpt = load_checkpoint(run_dir, ckpt_path=Path(ckpt_file))
+    target_algo = build_algo_from_checkpoint(ckpt, device=str(device))
+    target_scorer = RobomimicDiffusionScorer(
+        target_algo, device=str(device), score_timestep=SCORE_TIMESTEP, obs_keys=OBS_KEYS
+    )
+    load_time = time.time() - t0
+    print(f"{load_time:.0f}s")
+
+    # Generate guided trajectories
+    print(f"  Generating guided trajectories (action_scale={ACTION_SCALE})...", end=" ", flush=True)
+    np.random.seed(42)
+    torch.manual_seed(42)
+    t0 = time.time()
+    guided_trajs = generate_trajectories(
+        diffusion_model=ema.ema_model,
+        initial_states=initial_states_t,
+        normalize_fn=normalize_fn, unnormalize_fn=unnormalize_fn,
+        state_dim=STATE_DIM, action_dim=ACTION_DIM,
+        chunk_size=CHUNK_SIZE, t_gen=T_GEN, device=device,
+        target_scorer=target_scorer,
+        action_scale=ACTION_SCALE, normalize_grad=True,
+    )
+    gen_time = time.time() - t0
+
+    guided_states = guided_trajs[:, :, :STATE_DIM]
+
+    # Score with both reward models
+    guided_sr_hard = compute_sr_hard(guided_states)
+    guided_returns_hard = compute_ope_hard(guided_states, GAMMA)
+    guided_returns_sigmoid = compute_ope_sigmoid(guided_states, GAMMA)
+
+    results[name] = {
+        "oracle_sr": oracle_sr,
+        "guided_sr_hard": guided_sr_hard,
+        "guided_ope_hard": float(guided_returns_hard.mean()),
+        "guided_ope_sigmoid": float(guided_returns_sigmoid.mean()),
+        "guided_returns_hard": guided_returns_hard,
+        "guided_returns_sigmoid": guided_returns_sigmoid,
+        "guided_states": guided_states,
+        "gen_time": gen_time,
+    }
+
+    print(f"{gen_time:.0f}s — hard SR={guided_sr_hard*100:.0f}%, "
+          f"hard OPE={guided_returns_hard.mean():.3f}, "
+          f"sigmoid OPE={guided_returns_sigmoid.mean():.3f} (oracle={oracle_sr*100:.0f}%)")
+
+total_sweep_time = time.time() - t0_all
+print(f"\nTotal sweep time: {total_sweep_time:.0f}s ({total_sweep_time/60:.1f} min)")
+------------------
+
+----- stdout -----
+
+[1/6] 10demos_epoch10 (oracle=8%)
+  Loading checkpoint...
+----- stdout -----
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['robot0_gripper_qpos', 'robot0_eef_pos', 'object', 'robot0_eef_quat']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+----- stdout -----
+number of parameters: 6.576359e+07
+----- stdout -----
+13s
+  Generating guided trajectories (action_scale=0.01)...
+----- stdout -----
+69s — hard SR=56%, hard OPE=2.960, sigmoid OPE=6.238 (oracle=8%)
+
+[2/6] 100demos_epoch20 (oracle=42%)
+  Loading checkpoint...
+----- stdout -----
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['robot0_gripper_qpos', 'robot0_eef_pos', 'object', 'robot0_eef_quat']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+----- stdout -----
+number of parameters: 6.576359e+07
+----- stdout -----
+21s
+  Generating guided trajectories (action_scale=0.01)...
+----- stdout -----
+69s — hard SR=56%, hard OPE=4.220, sigmoid OPE=7.276 (oracle=42%)
+
+[3/6] test_checkpoint (oracle=54%)
+  Loading checkpoint...
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mFileNotFoundError[0m                         Traceback (most recent call last)
+Cell [0;32mIn[9], line 16[0m
+[1;32m     14[0m [38;5;28mprint[39m([38;5;124mf[39m[38;5;124m"[39m[38;5;124m  Loading checkpoint...[39m[38;5;124m"[39m, end[38;5;241m=[39m[38;5;124m"[39m[38;5;124m [39m[38;5;124m"[39m, flush[38;5;241m=[39m[38;5;28;01mTrue[39;00m)
+[1;32m     15[0m t0 [38;5;241m=[39m time[38;5;241m.[39mtime()
+[0;32m---> 16[0m ckpt [38;5;241m=[39m [43mload_checkpoint[49m[43m([49m[43mrun_dir[49m[43m,[49m[43m [49m[43mckpt_path[49m[38;5;241;43m=[39;49m[43mPath[49m[43m([49m[43mckpt_file[49m[43m)[49m[43m)[49m
+[1;32m     17[0m target_algo [38;5;241m=[39m build_algo_from_checkpoint(ckpt, device[38;5;241m=[39m[38;5;28mstr[39m(device))
+[1;32m     18[0m target_scorer [38;5;241m=[39m RobomimicDiffusionScorer(
+[1;32m     19[0m     target_algo, device[38;5;241m=[39m[38;5;28mstr[39m(device), score_timestep[38;5;241m=[39mSCORE_TIMESTEP, obs_keys[38;5;241m=[39mOBS_KEYS
+[1;32m     20[0m )
+
+File [0;32m~/latent_sope/src/latent_sope/robomimic_interface/checkpoints.py:248[0m, in [0;36mload_checkpoint[0;34m(run_dir, ckpt_path, map_location)[0m
+[1;32m    245[0m     ckpt_path [38;5;241m=[39m _find_latest_checkpoint(run_dir)
+[1;32m    246[0m ckpt_path [38;5;241m=[39m run_dir [38;5;241m/[39m ckpt_path
+[0;32m--> 248[0m ckpt_dict [38;5;241m=[39m [43m_load_ckpt_dict_robomimic[49m[43m([49m[43mckpt_path[49m[43m)[49m
+[1;32m    249[0m [38;5;28;01mif[39;00m ckpt_dict [38;5;129;01mis[39;00m [38;5;28;01mNone[39;00m:
+[1;32m    250[0m     ckpt_dict [38;5;241m=[39m _load_ckpt_dict_torch(ckpt_path, map_location[38;5;241m=[39mmap_location)
+
+File [0;32m~/latent_sope/src/latent_sope/robomimic_interface/checkpoints.py:185[0m, in [0;36m_load_ckpt_dict_robomimic[0;34m(ckpt_path)[0m
+[1;32m    182[0m [38;5;250m[39m[38;5;124;03m"""Load checkpoint using robomimic's helper if available."""[39;00m
+[1;32m    184[0m [38;5;28;01mif[39;00m [38;5;28mhasattr[39m(FileUtils, [38;5;124m"[39m[38;5;124mmaybe_dict_from_checkpoint[39m[38;5;124m"[39m):
+[0;32m--> 185[0m     [38;5;28;01mreturn[39;00m [43mFileUtils[49m[38;5;241;43m.[39;49m[43mmaybe_dict_from_checkpoint[49m[43m([49m[43mckpt_path[49m[38;5;241;43m=[39;49m[38;5;28;43mstr[39;49m[43m([49m[43mckpt_path[49m[43m)[49m[43m)[49m
+[1;32m    187[0m [38;5;28;01mreturn[39;00m [38;5;28;01mNone[39;00m
+
+File [0;32m~/latent_sope/third_party/robomimic/robomimic/utils/file_utils.py:222[0m, in [0;36mmaybe_dict_from_checkpoint[0;34m(ckpt_path, ckpt_dict)[0m
+[1;32m    220[0m [38;5;28;01massert[39;00m (ckpt_path [38;5;129;01mis[39;00m [38;5;129;01mnot[39;00m [38;5;28;01mNone[39;00m) [38;5;129;01mor[39;00m (ckpt_dict [38;5;129;01mis[39;00m [38;5;129;01mnot[39;00m [38;5;28;01mNone[39;00m)
+[1;32m    221[0m [38;5;28;01mif[39;00m ckpt_dict [38;5;129;01mis[39;00m [38;5;28;01mNone[39;00m:
+[0;32m--> 222[0m     ckpt_dict [38;5;241m=[39m [43mload_dict_from_checkpoint[49m[43m([49m[43mckpt_path[49m[43m)[49m
+[1;32m    223[0m [38;5;28;01mreturn[39;00m ckpt_dict
+
+File [0;32m~/latent_sope/third_party/robomimic/robomimic/utils/file_utils.py:202[0m, in [0;36mload_dict_from_checkpoint[0;34m(ckpt_path)[0m
+[1;32m    200[0m     ckpt_dict [38;5;241m=[39m torch[38;5;241m.[39mload(ckpt_path, map_location[38;5;241m=[39m[38;5;28;01mlambda[39;00m storage, loc: storage, weights_only[38;5;241m=[39m[38;5;28;01mFalse[39;00m)
+[1;32m    201[0m [38;5;28;01melse[39;00m:
+[0;32m--> 202[0m     ckpt_dict [38;5;241m=[39m [43mtorch[49m[38;5;241;43m.[39;49m[43mload[49m[43m([49m[43mckpt_path[49m[43m,[49m[43m [49m[43mweights_only[49m[38;5;241;43m=[39;49m[38;5;28;43;01mFalse[39;49;00m[43m)[49m
+[1;32m    203[0m [38;5;28;01mreturn[39;00m ckpt_dict
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/serialization.py:1500[0m, in [0;36mload[0;34m(f, map_location, pickle_module, weights_only, mmap, **pickle_load_args)[0m
+[1;32m   1497[0m [38;5;28;01mif[39;00m [38;5;124m"[39m[38;5;124mencoding[39m[38;5;124m"[39m [38;5;129;01mnot[39;00m [38;5;129;01min[39;00m pickle_load_args:
+[1;32m   1498[0m     pickle_load_args[[38;5;124m"[39m[38;5;124mencoding[39m[38;5;124m"[39m] [38;5;241m=[39m [38;5;124m"[39m[38;5;124mutf-8[39m[38;5;124m"[39m
+[0;32m-> 1500[0m [38;5;28;01mwith[39;00m [43m_open_file_like[49m[43m([49m[43mf[49m[43m,[49m[43m [49m[38;5;124;43m"[39;49m[38;5;124;43mrb[39;49m[38;5;124;43m"[39;49m[43m)[49m [38;5;28;01mas[39;00m opened_file:
+[1;32m   1501[0m     [38;5;28;01mif[39;00m _is_zipfile(opened_file):
+[1;32m   1502[0m         [38;5;66;03m# The zipfile reader is going to advance the current file position.[39;00m
+[1;32m   1503[0m         [38;5;66;03m# If we want to actually tail call to torch.jit.load, we need to[39;00m
+[1;32m   1504[0m         [38;5;66;03m# reset back to the original position.[39;00m
+[1;32m   1505[0m         orig_position [38;5;241m=[39m opened_file[38;5;241m.[39mtell()
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/serialization.py:768[0m, in [0;36m_open_file_like[0;34m(name_or_buffer, mode)[0m
+[1;32m    766[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21m_open_file_like[39m(name_or_buffer: FileLike, mode: [38;5;28mstr[39m) [38;5;241m-[39m[38;5;241m>[39m _opener[IO[[38;5;28mbytes[39m]]:
+[1;32m    767[0m     [38;5;28;01mif[39;00m _is_path(name_or_buffer):
+[0;32m--> 768[0m         [38;5;28;01mreturn[39;00m [43m_open_file[49m[43m([49m[43mname_or_buffer[49m[43m,[49m[43m [49m[43mmode[49m[43m)[49m
+[1;32m    769[0m     [38;5;28;01melse[39;00m:
+[1;32m    770[0m         [38;5;28;01mif[39;00m [38;5;124m"[39m[38;5;124mw[39m[38;5;124m"[39m [38;5;129;01min[39;00m mode:
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/torch/serialization.py:749[0m, in [0;36m_open_file.__init__[0;34m(self, name, mode)[0m
+[1;32m    748[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21m__init__[39m([38;5;28mself[39m, name: [38;5;28mstr[39m [38;5;241m|[39m os[38;5;241m.[39mPathLike[[38;5;28mstr[39m], mode: [38;5;28mstr[39m) [38;5;241m-[39m[38;5;241m>[39m [38;5;28;01mNone[39;00m:
+[0;32m--> 749[0m     [38;5;28msuper[39m()[38;5;241m.[39m[38;5;21m__init__[39m([38;5;28;43mopen[39;49m[43m([49m[43mname[49m[43m,[49m[43m [49m[43mmode[49m[43m)[49m)
+
+[0;31mFileNotFoundError[0m: [Errno 2] No such file or directory: '/home1/reishuen/latent_sope/third_party/robomimic/diffusion_policy_trained_models/test/20260309132349/models/model_epoch_600.pth'
+

@@ -1,0 +1,254 @@
+[NbConvertApp] Converting notebook /home1/reishuen/latent_sope/experiments/2026-03-25/MVP_v0.2.5.14_fixed_guidance.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+%matplotlib inline
+import sys, os, importlib
+import numpy as np
+import torch
+import torch.nn as nn
+import h5py, json, math, time
+import matplotlib.pyplot as plt
+from pathlib import Path
+from scipy import stats
+
+PROJECT_ROOT = Path("/home1/reishuen/latent_sope")
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "third_party" / "sope"))
+sys.path.insert(0, str(PROJECT_ROOT / "third_party" / "robomimic"))
+
+from opelab.core.baselines.diffusion.temporal import TemporalUnet
+from opelab.core.baselines.diffusion.diffusion import GaussianDiffusion
+from opelab.core.baselines.diffusion.helpers import EMA, apply_conditioning
+import robomimic.utils.file_utils as FileUtils
+import robomimic.utils.obs_utils as ObsUtils
+
+import latent_sope.robomimic_interface.guidance as _guidance_mod
+importlib.reload(_guidance_mod)
+from latent_sope.robomimic_interface.checkpoints import (
+    load_checkpoint, build_algo_from_checkpoint
+)
+from latent_sope.robomimic_interface.guidance import RobomimicDiffusionScorer
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device: {device}")
+
+# Paths
+CKPT_BASE = PROJECT_ROOT / "third_party/robomimic/diffusion_policy_trained_models"
+DEMO_HDF5 = PROJECT_ROOT / "third_party/robomimic/datasets/lift/ph/low_dim_v15.hdf5"
+TARGET_ROLLOUT_DIR = PROJECT_ROOT / "rollouts" / "target_policy_50"
+DIFFUSION_SAVE_DIR = PROJECT_ROOT / "diffusion_ckpts" / "mvp_v0252_traj_mse"
+V0214_SAVE_DIR = PROJECT_ROOT / "diffusion_ckpts" / "mvp_v0214_fixed_guidance"
+ORACLE_JSON = PROJECT_ROOT / "results/2026-03-12/oracle_eval_all_checkpoints.json"
+OBS_KEYS = ["object", "robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
+
+# Dims
+STATE_DIM = 19
+ACTION_DIM = 7
+TRANSITION_DIM = 26
+CUBE_Z_INDEX = 2
+LIFT_THRESHOLD = 0.84
+
+# Diffuser config (must match v0.2.5.2 training)
+CHUNK_SIZE = 4
+N_DIFFUSION_STEPS = 256
+BASE_DIM = 32
+DIM_MULTS = (1, 4, 8)
+ACTION_WEIGHT = 5.0
+
+# Generation config
+NUM_SYNTHETIC = 50
+T_GEN = 60
+GAMMA = 1.0
+
+# Guidance config — 10x increase from v0.2.5.13
+SCORE_TIMESTEP = 5
+ACTION_SCALE = 0.01  # was 0.001 in v0.2.5.13
+SIGMOID_SHARPNESS = 150.0
+
+# BC Gaussian config
+BC_HIDDEN = 256
+BC_EPOCHS = 500
+BC_BATCH = 256
+
+# Target policies (same as v0.2.5.6/13)
+TARGET_POLICIES = [
+    {"name": "10demos_epoch10", "dir": "lift_diffusion_10demos/20260311115828", "ckpt": "models/model_epoch_10.pth"},
+    {"name": "100demos_epoch20", "dir": "lift_diffusion_100demos/20260311135551", "ckpt": "models/model_epoch_20.pth"},
+    {"name": "test_checkpoint", "dir": "test/20260309132349", "ckpt": "models/model_epoch_600.pth"},
+    {"name": "10demos_epoch30", "dir": "lift_diffusion_10demos/20260311115828", "ckpt": "models/model_epoch_30.pth"},
+    {"name": "50demos_epoch30", "dir": "lift_diffusion_50demos/20260311134204", "ckpt": "models/model_epoch_30.pth"},
+    {"name": "200demos_epoch40", "dir": "lift_diffusion_200demos/20260311141036", "ckpt": "models/model_epoch_40.pth"},
+]
+
+print(f"score_timestep={SCORE_TIMESTEP}, action_scale={ACTION_SCALE}")
+print(f"sigmoid_sharpness={SIGMOID_SHARPNESS}")
+print(f"{NUM_SYNTHETIC} trajs, T_GEN={T_GEN}")
+print(f"{len(TARGET_POLICIES)} target policies to evaluate")
+------------------
+
+----- stderr -----
+Gym has been unmaintained since 2022 and does not support NumPy 2.0 amongst other critical functionality.
+Please upgrade to Gymnasium, the maintained drop-in replacement of Gym, or contact the authors of your software and request that they upgrade.
+See the migration guide at https://gymnasium.farama.org/introduction/migration_guide/ for additional information.
+----- stderr -----
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+----- stderr -----
+[1mCLIPTextModelWithProjection LOAD REPORT[0m from: openai/clip-vit-large-patch14
+Key                                                            | Status     |  | 
+---------------------------------------------------------------+------------+--+-
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.weight   | UNEXPECTED |  | 
+vision_model.pre_layrnorm.bias                                 | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.bias   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.k_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.weight   | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.bias              | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.bias              | UNEXPECTED |  | 
+vision_model.embeddings.patch_embedding.weight                 | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.bias          | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm2.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.q_proj.bias     | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc1.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.layer_norm1.weight        | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.mlp.fc2.weight            | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.out_proj.weight | UNEXPECTED |  | 
+vision_model.encoder.layers.{0...23}.self_attn.v_proj.bias     | UNEXPECTED |  | 
+vision_model.embeddings.class_embedding                        | UNEXPECTED |  | 
+vision_model.post_layernorm.weight                             | UNEXPECTED |  | 
+vision_model.embeddings.position_ids                           | UNEXPECTED |  | 
+logit_scale                                                    | UNEXPECTED |  | 
+visual_projection.weight                                       | UNEXPECTED |  | 
+vision_model.embeddings.position_embedding.weight              | UNEXPECTED |  | 
+text_model.embeddings.position_ids                             | UNEXPECTED |  | 
+vision_model.post_layernorm.bias                               | UNEXPECTED |  | 
+vision_model.pre_layrnorm.weight                               | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+----- stderr -----
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+----- stderr -----
+Flax classes are deprecated and will be removed in Diffusers v1.0.0. We recommend migrating to PyTorch classes or pinning your version of Diffusers.
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mAttributeError[0m                            Traceback (most recent call last)
+Cell [0;32mIn[1], line 25[0m
+[1;32m     23[0m [38;5;28;01mimport[39;00m[38;5;250m [39m[38;5;21;01mlatent_sope[39;00m[38;5;21;01m.[39;00m[38;5;21;01mrobomimic_interface[39;00m[38;5;21;01m.[39;00m[38;5;21;01mguidance[39;00m[38;5;250m [39m[38;5;28;01mas[39;00m[38;5;250m [39m[38;5;21;01m_guidance_mod[39;00m
+[1;32m     24[0m importlib[38;5;241m.[39mreload(_guidance_mod)
+[0;32m---> 25[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mlatent_sope[39;00m[38;5;21;01m.[39;00m[38;5;21;01mrobomimic_interface[39;00m[38;5;21;01m.[39;00m[38;5;21;01mcheckpoints[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m (
+[1;32m     26[0m     load_checkpoint, build_algo_from_checkpoint
+[1;32m     27[0m )
+[1;32m     28[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mlatent_sope[39;00m[38;5;21;01m.[39;00m[38;5;21;01mrobomimic_interface[39;00m[38;5;21;01m.[39;00m[38;5;21;01mguidance[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m RobomimicDiffusionScorer
+[1;32m     30[0m device [38;5;241m=[39m torch[38;5;241m.[39mdevice([38;5;124m"[39m[38;5;124mcuda[39m[38;5;124m"[39m [38;5;28;01mif[39;00m torch[38;5;241m.[39mcuda[38;5;241m.[39mis_available() [38;5;28;01melse[39;00m [38;5;124m"[39m[38;5;124mcpu[39m[38;5;124m"[39m)
+
+File [0;32m~/latent_sope/src/latent_sope/robomimic_interface/checkpoints.py:38[0m
+[1;32m     36[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mrobomimic[39;00m[38;5;21;01m.[39;00m[38;5;21;01malgo[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m algo_factory, RolloutPolicy, PolicyAlgo
+[1;32m     37[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mrobomimic[39;00m[38;5;21;01m.[39;00m[38;5;21;01menvs[39;00m[38;5;21;01m.[39;00m[38;5;21;01menv_base[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m EnvBase
+[0;32m---> 38[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01msrc[39;00m[38;5;21;01m.[39;00m[38;5;21;01mlatent_sope[39;00m[38;5;21;01m.[39;00m[38;5;21;01mutils[39;00m[38;5;21;01m.[39;00m[38;5;21;01mcommon[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m CONSOLE_LOGGER, timeit
+[1;32m     41[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21mbuild_h5_tree[39m(
+[1;32m     42[0m     group: h5py[38;5;241m.[39mGroup,
+[1;32m     43[0m     max_depth: [38;5;28mint[39m [38;5;241m=[39m [38;5;241m2[39m,
+[1;32m     44[0m     max_children: [38;5;28mint[39m [38;5;241m=[39m [38;5;241m8[39m,
+[1;32m     45[0m ) [38;5;241m-[39m[38;5;241m>[39m Dict[[38;5;28mstr[39m, Any]:
+[1;32m     46[0m [38;5;250m    [39m[38;5;124;03m"""Return a generic pytree (nested dict) for display via nnx.display."""[39;00m
+
+File [0;32m~/latent_sope/src/latent_sope/utils/common.py:12[0m
+[1;32m     10[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mwandb[39;00m[38;5;21;01m.[39;00m[38;5;21;01msdk[39;00m[38;5;21;01m.[39;00m[38;5;21;01mwandb_run[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m Run
+[1;32m     11[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mpathlib[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m Path
+[0;32m---> 12[0m [38;5;28;01mimport[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m
+[1;32m     13[0m [38;5;66;03m# from brax.io import mjcf[39;00m
+[1;32m     15[0m os[38;5;241m.[39menviron[[38;5;124m'[39m[38;5;124mXLA_PYTHON_CLIENT_PREALLOCATE[39m[38;5;124m'[39m] [38;5;241m=[39m [38;5;124m'[39m[38;5;124mfalse[39m[38;5;124m'[39m
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/mujoco/__init__.py:62[0m
+[1;32m     60[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m[38;5;21;01m.[39;00m[38;5;21;01m_specs[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m [38;5;241m*[39m
+[1;32m     61[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m[38;5;21;01m.[39;00m[38;5;21;01m_structs[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m [38;5;241m*[39m
+[0;32m---> 62[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m[38;5;21;01m.[39;00m[38;5;21;01mgl_context[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m [38;5;241m*[39m
+[1;32m     63[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m[38;5;21;01m.[39;00m[38;5;21;01mrenderer[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m Renderer
+[1;32m     65[0m MjStruct: TypeAlias [38;5;241m=[39m Union[
+[1;32m     66[0m     _specs[38;5;241m.[39mMjsBody,
+[1;32m     67[0m     _specs[38;5;241m.[39mMjsFrame,
+[0;32m   (...)[0m
+[1;32m     89[0m     _specs[38;5;241m.[39mMjsPlugin,
+[1;32m     90[0m ]
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/mujoco/gl_context.py:41[0m
+[1;32m     39[0m   GLContext [38;5;241m=[39m _GLContext
+[1;32m     40[0m [38;5;28;01melif[39;00m _SYSTEM [38;5;241m==[39m [38;5;124m'[39m[38;5;124mLinux[39m[38;5;124m'[39m [38;5;129;01mand[39;00m _MUJOCO_GL [38;5;241m==[39m [38;5;124m'[39m[38;5;124megl[39m[38;5;124m'[39m:
+[0;32m---> 41[0m   [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m[38;5;21;01m.[39;00m[38;5;21;01megl[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m GLContext [38;5;28;01mas[39;00m _GLContext
+[1;32m     42[0m   GLContext [38;5;241m=[39m _GLContext
+[1;32m     43[0m [38;5;28;01melif[39;00m _SYSTEM [38;5;241m==[39m [38;5;124m'[39m[38;5;124mDarwin[39m[38;5;124m'[39m:
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/mujoco/egl/__init__.py:31[0m
+[1;32m     25[0m [38;5;28;01melif[39;00m PYOPENGL_PLATFORM[38;5;241m.[39mlower() [38;5;241m!=[39m [38;5;124m'[39m[38;5;124megl[39m[38;5;124m'[39m:
+[1;32m     26[0m   [38;5;28;01mraise[39;00m [38;5;167;01mImportError[39;00m(
+[1;32m     27[0m       [38;5;124m'[39m[38;5;124mCannot use EGL rendering platform. [39m[38;5;124m'[39m
+[1;32m     28[0m       [38;5;124m'[39m[38;5;124mThe PYOPENGL_PLATFORM environment variable is set to [39m[38;5;132;01m{!r}[39;00m[38;5;124m [39m[38;5;124m'[39m
+[1;32m     29[0m       [38;5;124m'[39m[38;5;124m(should be either unset or [39m[38;5;130;01m\'[39;00m[38;5;124megl[39m[38;5;130;01m\'[39;00m[38;5;124m).[39m[38;5;124m'[39m)
+[0;32m---> 31[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mmujoco[39;00m[38;5;21;01m.[39;00m[38;5;21;01megl[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m egl_ext [38;5;28;01mas[39;00m EGL
+[1;32m     32[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mOpenGL[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m error
+[1;32m     35[0m [38;5;28;01mdef[39;00m[38;5;250m [39m[38;5;21mcreate_initialized_egl_device_display[39m():
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/mujoco/egl/egl_ext.py:27[0m
+[1;32m     24[0m   [38;5;28;01mpass[39;00m
+[1;32m     26[0m [38;5;66;03m# pylint: disable=g-import-not-at-top[39;00m
+[0;32m---> 27[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mOpenGL[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m EGL
+[1;32m     28[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mOpenGL[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m error
+[1;32m     30[0m [38;5;66;03m# From the EGL_EXT_device_enumeration extension.[39;00m
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/OpenGL/EGL/__init__.py:2[0m
+[1;32m      1[0m [38;5;124;03m"""OpenGL.EGL the portable interface to GL environments"""[39;00m
+[0;32m----> 2[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mOpenGL[39;00m[38;5;21;01m.[39;00m[38;5;21;01mraw[39;00m[38;5;21;01m.[39;00m[38;5;21;01mEGL[39;00m[38;5;21;01m.[39;00m[38;5;21;01m_types[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m [38;5;241m*[39m
+[1;32m      3[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mOpenGL[39;00m[38;5;21;01m.[39;00m[38;5;21;01mraw[39;00m[38;5;21;01m.[39;00m[38;5;21;01mEGL[39;00m[38;5;21;01m.[39;00m[38;5;21;01m_errors[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m EGLError
+[1;32m      4[0m [38;5;28;01mfrom[39;00m[38;5;250m [39m[38;5;21;01mOpenGL[39;00m[38;5;21;01m.[39;00m[38;5;21;01mEGL[39;00m[38;5;21;01m.[39;00m[38;5;21;01mVERSION[39;00m[38;5;21;01m.[39;00m[38;5;21;01mEGL_1_0[39;00m[38;5;250m [39m[38;5;28;01mimport[39;00m [38;5;241m*[39m
+
+File [0;32m~/miniconda3/envs/latent_sope/lib/python3.10/site-packages/OpenGL/raw/EGL/_types.py:87[0m
+[1;32m     84[0m EGL_NO_SURFACE [38;5;241m=[39m EGLSurface()
+[1;32m     85[0m EGL_DONT_CARE [38;5;241m=[39m [38;5;241m-[39m[38;5;241m1[39m
+[0;32m---> 87[0m raw_eglQueryString [38;5;241m=[39m [43m_p[49m[38;5;241;43m.[39;49m[43mPLATFORM[49m[38;5;241;43m.[39;49m[43mEGL[49m[38;5;241;43m.[39;49m[43meglQueryString[49m
+[1;32m     88[0m raw_eglQueryString[38;5;241m.[39mrestype [38;5;241m=[39m ctypes[38;5;241m.[39mc_char_p
+[1;32m     89[0m raw_eglQueryString[38;5;241m.[39m[38;5;18m__doc__[39m [38;5;241m=[39m [38;5;124m"""[39m[38;5;124mRaw version of eglQueryString that does not check for availability[39m[38;5;124m"""[39m
+
+[0;31mAttributeError[0m: 'NoneType' object has no attribute 'eglQueryString'
+
