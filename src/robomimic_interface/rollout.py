@@ -15,8 +15,8 @@ from robomimic.algo import RolloutPolicy, PolicyAlgo
 from robomimic.utils import tensor_utils as TensorUtils
 from robomimic.envs.env_base import EnvBase
 
-from src.latent_sope.robomimic_interface.encoders import resolve_module
-from src.latent_sope.utils.common import timeit
+from src.robomimic_interface.encoders import resolve_module
+from src.utils import timeit
 
 @dataclass
 class RolloutStats:

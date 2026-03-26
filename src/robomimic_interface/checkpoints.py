@@ -31,11 +31,14 @@ from copy import deepcopy
 
 import numpy as np
 import torch
-import robomimic.utils.file_utils as FileUtils
-import robomimic.utils.obs_utils as ObsUtils
-from robomimic.algo import algo_factory, RolloutPolicy, PolicyAlgo
-from robomimic.envs.env_base import EnvBase
-from src.latent_sope.utils.common import CONSOLE_LOGGER, timeit
+
+
+sys.path.append(Path(__file__).parent.parent.parent.parent / "third_party")
+import third_party.robomimic.robomimic.utils.file_utils as FileUtils
+import third_party.robomimic.robomimic.utils.obs_utils as ObsUtils
+from third_party.robomimic.robomimic.algo import algo_factory, RolloutPolicy, PolicyAlgo
+from third_party.robomimic.robomimic.envs.env_base import EnvBase
+from src.utils import CONSOLE_LOGGER, timeit
 
 
 def build_h5_tree(

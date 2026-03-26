@@ -9,8 +9,8 @@ import torch
 from torch.utils.data import ConcatDataset, DataLoader
 from torch.utils.data._utils.collate import default_collate
 
-from src.latent_sope.robomimic_interface.encoders import extract_embeddings_batched
-from src.latent_sope.robomimic_interface.rollout import (
+from src.robomimic_interface.encoders import extract_embeddings_batched
+from src.robomimic_interface.rollout import (
     RolloutLatentTrajectory,
     load_rollout_latents,
 )

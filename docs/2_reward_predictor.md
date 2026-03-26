@@ -1,0 +1,259 @@
+# SOPE Reward Predictor
+
+This note documents how the vendored SOPE implementation trains its per-step
+reward predictor, what target it learns, and where that logic is implemented in
+this repository.
+
+The relevant code is in the vendored SOPE tree under
+[`third_party/sope/opelab/`](../third_party/sope/opelab/).
+
+## Short Answer
+
+SOPE trains a transition-level regressor for immediate reward, not return-to-go
+and not terminal success.
+
+Given an offline dataset of transitions
+$\{(s_i, a_i, r_i, s'_i)\}_{i=1}^N$, the reward predictor is trained on
+
+$$\begin{align}
+x_i &= [s_i; a_i], \\
+y_i &= r_i,
+\end{align}$$
+
+using mean-squared error:
+
+$$\begin{align}
+\mathcal{L}(\phi)
+=
+\frac{1}{B}\sum_{i=1}^{B}
+\left(\hat{r}_\phi(s_i, a_i) - r_i\right)^2.
+\end{align}$$
+
+So the learned model is
+
+$$\begin{align}
+\hat{r}_\phi(s, a) \approx r(s, a),
+\end{align}$$
+
+where $r(s, a)$ is the immediate per-step reward from the offline dataset.
+
+## Where Training Happens
+
+### 1. Training entrypoint
+
+The reward predictor is instantiated and trained from
+[`third_party/sope/opelab/examples/helpers.py`](../third_party/sope/opelab/examples/helpers.py).
+
+In `evaluate_policies(...)`, SOPE:
+
+1. loads an offline dataset
+2. calls `Data(env).train_reward_estimator(offline_data)`
+3. passes the resulting `reward_estimator` into each baseline's `evaluate(...)`
+
+Relevant call site:
+
+- [`third_party/sope/opelab/examples/helpers.py`](../third_party/sope/opelab/examples/helpers.py)
+
+This means reward-model training happens once per evaluation run, before the
+baseline estimates are computed.
+
+### 2. Dataset-to-supervision conversion
+
+The actual extraction of training examples happens in
+[`third_party/sope/opelab/core/data.py`](../third_party/sope/opelab/core/data.py).
+
+`Data.train_reward_estimator(...)` iterates over each trajectory `tau` in the
+offline dataset and over each timestep `i` in that trajectory, then builds:
+
+$$\begin{align}
+x_i &= [s_i; a_i], \\
+y_i &= r_i.
+\end{align}$$
+
+Concretely:
+
+- `states = tao["states"]`
+- `actions = tao["actions"]`
+- `rewards = tao["rewards"]`
+- each input is `np.concatenate([states[i], actions[i]])`
+- each target is `rewards[i]`
+
+Important implication:
+
+- `next_state` is loaded into the dataset structure, but it is **not** used to
+  train the reward predictor
+- the predictor is supervised directly from per-transition reward labels
+- this matches the STITCH-OPE description of learning an immediate reward model
+  from behavior transitions
+
+## Model Architecture And Optimization
+
+The model configuration is split across
+[`third_party/sope/opelab/core/data.py`](../third_party/sope/opelab/core/data.py)
+and
+[`third_party/sope/opelab/core/reward.py`](../third_party/sope/opelab/core/reward.py).
+
+### Architecture
+
+`Data.train_reward_estimator(...)` constructs
+
+$$\begin{align}
+\texttt{MLP([64, 64, 1])},
+\end{align}$$
+
+so the default reward predictor is a 2-hidden-layer MLP with scalar output.
+
+### Optimizer and objective
+
+`RewardEstimator` in
+[`third_party/sope/opelab/core/reward.py`](../third_party/sope/opelab/core/reward.py)
+uses:
+
+- Adam optimizer
+- learning rate `1e-3`
+- batch size `64` for `RewardEstimator`
+- MSE loss on immediate reward
+
+The core loss implementation is:
+
+$$\begin{align}
+\mathcal{L}(\phi)
+=
+\mathbb{E}\left[
+\left(\hat{r}_\phi(s, a) - r\right)^2
+\right].
+\end{align}$$
+
+In the current code, training is stochastic minibatch optimization for a fixed
+number of iterations:
+
+- `RewardEnsembleEstimator.fit(..., iters=1000, seeds=[42])` is called from
+  `Data.train_reward_estimator(...)`
+- each training step samples a minibatch by index with replacement
+
+## Ensemble Structure
+
+SOPE wraps the single reward regressor in `RewardEnsembleEstimator`, defined in
+[`third_party/sope/opelab/core/reward.py`](../third_party/sope/opelab/core/reward.py).
+
+Its intended structure is:
+
+- train multiple bootstrap models
+- each model sees a random subsample of the offline transitions
+- predictions are stacked so downstream code can aggregate across models
+
+The ensemble API is:
+
+$$\begin{align}
+\hat{r}(s, a)
+=
+\left[
+\hat{r}_{\phi_1}(s, a), \dots, \hat{r}_{\phi_M}(s, a)
+\right].
+\end{align}$$
+
+However, in the current repository state, `Data.train_reward_estimator(...)`
+calls:
+
+```python
+est.fit(rewards_x, rewards_y, 1000, [42])
+```
+
+with the default `n_bootstraps=1`.
+
+So despite the ensemble wrapper, the current default behavior is effectively a
+single reward regressor trained on a 50% random subsample of the transition
+dataset.
+
+## How The Predictor Is Used During OPE
+
+The learned reward predictor is consumed in
+[`third_party/sope/opelab/core/baselines/diffuser.py`](../third_party/sope/opelab/core/baselines/diffuser.py).
+
+After the diffusion model generates synthetic trajectories, `Diffuser.evaluate`
+loops over each generated timestep:
+
+1. extract `state_t`
+2. extract `action_t`
+3. compute reward either from an environment-specific `reward_fn`, if one is
+   available, or from `reward_estimator.predict([state_t; action_t])`
+4. discount and accumulate
+
+In equations, when no analytic `reward_fn` is available, SOPE forms the
+synthetic return as
+
+$$\begin{align}
+\hat{G}
+=
+\sum_{t=0}^{T_i-1}
+\gamma^t
+\hat{r}_\phi(s_t, a_t).
+\end{align}$$
+
+This is the exact role of the reward predictor in SOPE:
+
+- it scores already-generated trajectories
+- it does **not** guide the diffusion sampler
+- it predicts immediate reward, not long-horizon value
+
+## Data Assumptions
+
+The current SOPE reward-predictor path assumes:
+
+- the offline dataset already contains per-step rewards
+- those rewards are aligned with the `(state, action)` pairs in each trajectory
+- immediate reward is learnable directly from `[s; a]`
+
+That matters for sparse-reward tasks. If positive rewards are rare, the current
+MSE regressor is still trained on the same sparse labels:
+
+$$\begin{align}
+y_i \in \{0, 1\}
+\end{align}$$
+
+or similarly sparse continuous targets, depending on the environment.
+
+The code does not currently add:
+
+- class reweighting
+- focal losses
+- return-to-go targets
+- terminal-only supervision
+
+So for sparse tasks, SOPE is relying on plain supervised regression on sparse
+per-transition rewards.
+
+## Repo-Specific Distinction: SOPE Vs `rei`
+
+This repository also contains a separate reward-scoring path in
+[`rei/src/latent_sope/eval/reward_model.py`](../rei/src/latent_sope/eval/reward_model.py).
+
+That file is **not** the vendored SOPE implementation. It provides:
+
+- `LiftRewardFn`, an analytical per-step reward for robosuite Lift
+- `RewardMLP`, a PyTorch reward regressor used in Rei-specific experiments
+
+So there are two reward-model stories in this repo:
+
+- **SOPE reward predictor:** JAX MLP in `third_party/sope/opelab/core/reward.py`,
+  trained through `core/data.py`
+- **Rei reward scoring utilities:** PyTorch / analytical code in
+  `rei/src/latent_sope/eval/reward_model.py`
+
+If the question is specifically "how does SOPE train the per-step reward
+predictor?", the authoritative implementation is the vendored SOPE path in
+`third_party/sope/opelab/core/{data,reward}.py`.
+
+## Practical Summary
+
+SOPE's reward predictor in this repo is:
+
+- supervised on offline transition tuples
+- trained on concatenated `[state, action]`
+- fit to immediate reward labels `r_t`
+- implemented as `MLP([64, 64, 1])`
+- optimized with Adam and MSE
+- wrapped in a bootstrap-style ensemble class, but currently used with one
+  bootstrap by default
+- consumed only during synthetic trajectory scoring when no hand-coded reward
+  function is available

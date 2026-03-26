@@ -19,20 +19,12 @@ from third_party.sope.opelab.core.baselines.diffusion.temporal import TemporalUn
 from third_party.sope.opelab.core.baselines.diffusion.diffusion import GaussianDiffusion  # type: ignore
 from third_party.sope.opelab.core.baselines import diffuser
 
-from src.latent_sope.robomimic_interface.dataset import (
+from src.robomimic_interface.dataset import (
     RolloutChunkDataset,
     RolloutChunkDatasetConfig,
 )
 
 
-# TODO: Port over `diffuser.generate_full_trajectory()` chunk-stitching loop (roll forward, update `conditions`, handle termination, track `end_indices`).
-# TODO: Wire guidance hyperparameters (`action_scale`, `state_scale`, `use_adaptive`, `use_neg_grad`, `neg_grad_scale`, `normalize_grad`, `k_guide`, `use_action_grad_only`, `clamp`, `l_inf`, `ratio`) into `SopeDiffuser.sample(...)`.
-# TODO: Implement `guided=True` end-to-end (configure `GaussianDiffusion` guidance inputs and pass through from config).
-# TODO: Add optional action squashing support (`tanh_action`, `TanhBijector` / `gmode`) to match `Diffuser`.
-# TODO: Add optional termination predicate handling for full-trajectory rollout.
-# TODO: Add optional env-specific initial state generation (or accept initial state tensor input) to match `Diffuser.get_initial_state()`.
-
-# TODO: understand how weighted loss in sope works
 
 """ Utils for normalization / unnormalization """
 

@@ -9,18 +9,18 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from src.latent_sope.diffusion.sope_diffuser import (
+from src.diffusion.sope_diffuser import (
     NormalizationStats as SopeNormalizationStats,
     SopeDiffuser,
     SopeDiffusionConfig,
     cross_validate_configs,
 )
-from src.latent_sope.robomimic_interface.dataset import (
+from src.robomimic_interface.dataset import (
     NormalizationStats as DatasetNormalizationStats,
     RolloutChunkDatasetConfig,
     make_rollout_chunk_dataloader,
 )
-from src.latent_sope.utils.misc import resolve_device, set_global_seed
+from src.utils import resolve_device, set_global_seed
 
 PathLike = Union[str, Path]
 
