@@ -1,0 +1,6 @@
+==========================================
+SLURM_JOB_ID = 7610278
+SLURM_JOB_NODELIST = d14-13
+TMPDIR = /tmp/SLURM_7610278
+==========================================
+ERROR: Notebook not found: experiments/2026-03-26/MVP_v0.2.5.14g_action_sweep_high.ipynb

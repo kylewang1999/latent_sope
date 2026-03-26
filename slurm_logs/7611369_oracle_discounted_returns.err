@@ -1,0 +1,259 @@
+[NbConvertApp] Converting notebook experiments/2026-03-26/oracle_discounted_returns.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Full-horizon rollout + save (no early termination) ──
+
+def full_horizon_rollout(policy, env, horizon, obs_keys):
+    """Run a single rollout for the full horizon without early termination.
+    
+    Records pre-step obs as latents — matching the semantics of synthetic
+    trajectories from the diffuser (trained on pre-step data from collect.py).
+    With no early termination, pre-step recording captures all relevant states.
+    
+    Returns:
+        latents: (horizon, state_dim) array of pre-step observations
+        actions: (horizon, action_dim) array
+        rewards_hard: (horizon,) per-step hard reward (cube_z > 0.84)
+        env_reward_total: float, cumulative env reward
+        ever_success: bool, whether cube was ever lifted
+    """
+    policy.start_episode()
+    obs = env.reset()
+    state_dict = env.get_state()
+    obs = env.reset_to(state_dict)
+
+    latents_list = []
+    actions_list = []
+    ever_success = False
+    env_reward_total = 0.0
+
+    for step_i in range(horizon):
+        # Record pre-step obs as latent (matches synthetic trajectory semantics)
+        latent = np.concatenate([np.asarray(obs[k]) for k in obs_keys])
+        latents_list.append(latent)
+
+        # Act
+        act = policy(ob=obs)
+        actions_list.append(np.asarray(act))
+
+        # Step — do NOT break on success/done
+        next_obs, reward, done, info = env.step(act)
+        env_reward_total += reward
+        if env.is_success()["task"]:
+            ever_success = True
+
+        # If env says done (internal horizon), reset to continue
+        # This shouldn't happen if env horizon > our horizon (60 << 400)
+        if done:
+            obs = env.reset()
+            state_dict = env.get_state()
+            obs = env.reset_to(state_dict)
+        else:
+            obs = deepcopy(next_obs)
+
+    latents = np.stack(latents_list, axis=0).astype(np.float32)  # (H, state_dim)
+    actions = np.stack(actions_list, axis=0).astype(np.float32)  # (H, action_dim)
+
+    # Compute per-step hard reward from pre-step cube_z
+    # This matches compute_ope_hard() which operates on synthetic states
+    cube_z = latents[:, CUBE_Z_INDEX]
+    rewards_hard = (cube_z > LIFT_THRESHOLD).astype(np.float32)
+
+    return latents, actions, rewards_hard, env_reward_total, ever_success
+
+
+def save_rollout_h5(path, latents, actions, rewards_hard, env_reward_total, ever_success, horizon):
+    """Save a single rollout to .h5."""
+    with h5py.File(path, "w") as f:
+        f.create_dataset("latents", data=latents, compression="gzip")
+        f.create_dataset("actions", data=actions, compression="gzip")
+        f.create_dataset("rewards_hard", data=rewards_hard)
+        f.attrs["env_reward_total"] = env_reward_total
+        f.attrs["success"] = int(ever_success)
+        f.attrs["horizon"] = horizon
+        f.attrs["sum_hard_reward"] = float(rewards_hard.sum())
+
+
+# ── Main loop ──
+results = {}
+t0_all = time.time()
+
+for i, pol in enumerate(TARGET_POLICIES):
+    name = pol["name"]
+    run_dir = CKPT_BASE / pol["dir"]
+
+    print(f"\n[{i+1}/{len(TARGET_POLICIES)}] {name}")
+    t0 = time.time()
+
+    # Load policy + env
+    ckpt = load_checkpoint(run_dir, ckpt_path=Path(pol["ckpt"]))
+    policy = build_rollout_policy_from_checkpoint(ckpt, device=DEVICE, verbose=False)
+    env = build_env_from_checkpoint(ckpt, render=False, render_offscreen=False, verbose=False)
+
+    # Create save dir
+    save_dir = ROLLOUT_SAVE_DIR / name
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    per_rollout_returns = []
+    n_success = 0
+
+    for j in range(NUM_ROLLOUTS):
+        latents, actions, rewards_hard, env_rew, success = full_horizon_rollout(
+            policy, env, HORIZON, OBS_KEYS,
+        )
+
+        # Save to disk
+        save_rollout_h5(
+            save_dir / f"rollout_{j:04d}.h5",
+            latents, actions, rewards_hard, env_rew, success, HORIZON,
+        )
+
+        # Compute discounted return (matches compute_ope_hard formula exactly):
+        # ret = sum_t gamma^t * (cube_z_t > 0.84)
+        discounts = GAMMA ** np.arange(HORIZON)
+        ret = float((discounts * rewards_hard).sum())
+        per_rollout_returns.append(ret)
+        if success:
+            n_success += 1
+
+        if (j + 1) % 10 == 0:
+            running_mean = np.mean(per_rollout_returns)
+            print(f"  [{j+1}/{NUM_ROLLOUTS}] running mean={running_mean:.2f}, "
+                  f"SR={n_success/(j+1)*100:.0f}%")
+
+    returns = np.array(per_rollout_returns, dtype=np.float32)
+    elapsed = time.time() - t0
+
+    results[name] = {
+        "mean_return": float(returns.mean()),
+        "std_return": float(returns.std()),
+        "per_rollout_returns": returns.tolist(),
+        "gamma": GAMMA,
+        "horizon": HORIZON,
+        "num_rollouts": NUM_ROLLOUTS,
+        "success_rate": n_success / NUM_ROLLOUTS,
+    }
+
+    print(f"  DONE: mean={returns.mean():.2f} +/- {returns.std():.2f}  "
+          f"SR={n_success/NUM_ROLLOUTS*100:.0f}%  "
+          f"(min={returns.min():.1f}, max={returns.max():.1f})  [{elapsed:.0f}s]")
+
+total_time = time.time() - t0_all
+print(f"\nTotal time: {total_time:.0f}s ({total_time/60:.1f} min)")
+print(f"Rollouts saved to: {ROLLOUT_SAVE_DIR}")
+------------------
+
+----- stdout -----
+
+[1/12] 50demos_epoch10
+----- stdout -----
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['robot0_gripper_qpos', 'robot0_eef_quat', 'robot0_eef_pos', 'object']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+----- stdout -----
+number of parameters: 6.576359e+07
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mNo private macro file found! (macros.py:57)
+----- stderr -----
+WARNING:robosuite_logs:No private macro file found!
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mIt is recommended to use a private macro file (macros.py:58)
+----- stderr -----
+WARNING:robosuite_logs:It is recommended to use a private macro file
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mTo setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py (macros.py:59)
+----- stderr -----
+WARNING:robosuite_logs:To setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py
+----- stdout -----
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['robot0_gripper_qpos', 'robot0_eef_quat', 'robot0_eef_pos', 'object']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mCould not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install. (__init__.py:30)
+----- stderr -----
+WARNING:robosuite_logs:Could not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install.
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mCould not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot. (__init__.py:40)
+----- stderr -----
+WARNING:robosuite_logs:Could not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot.
+----- stdout -----
+Created environment with name Lift
+Action size is 7
+[33mROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)[0m
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mValueError[0m                                Traceback (most recent call last)
+Cell [0;32mIn[2], line 98[0m
+[1;32m     95[0m n_success [38;5;241m=[39m [38;5;241m0[39m
+[1;32m     97[0m [38;5;28;01mfor[39;00m j [38;5;129;01min[39;00m [38;5;28mrange[39m(NUM_ROLLOUTS):
+[0;32m---> 98[0m     latents, actions, rewards_hard, env_rew, success [38;5;241m=[39m [43mfull_horizon_rollout[49m[43m([49m
+[1;32m     99[0m [43m        [49m[43mpolicy[49m[43m,[49m[43m [49m[43menv[49m[43m,[49m[43m [49m[43mHORIZON[49m[43m,[49m[43m [49m[43mOBS_KEYS[49m[43m,[49m
+[1;32m    100[0m [43m    [49m[43m)[49m
+[1;32m    102[0m     [38;5;66;03m# Save to disk[39;00m
+[1;32m    103[0m     save_rollout_h5(
+[1;32m    104[0m         save_dir [38;5;241m/[39m [38;5;124mf[39m[38;5;124m"[39m[38;5;124mrollout_[39m[38;5;132;01m{[39;00mj[38;5;132;01m:[39;00m[38;5;124m04d[39m[38;5;132;01m}[39;00m[38;5;124m.h5[39m[38;5;124m"[39m,
+[1;32m    105[0m         latents, actions, rewards_hard, env_rew, success, HORIZON,
+[1;32m    106[0m     )
+
+Cell [0;32mIn[2], line 29[0m, in [0;36mfull_horizon_rollout[0;34m(policy, env, horizon, obs_keys)[0m
+[1;32m     25[0m env_reward_total [38;5;241m=[39m [38;5;241m0.0[39m
+[1;32m     27[0m [38;5;28;01mfor[39;00m step_i [38;5;129;01min[39;00m [38;5;28mrange[39m(horizon):
+[1;32m     28[0m     [38;5;66;03m# Record pre-step obs as latent (matches synthetic trajectory semantics)[39;00m
+[0;32m---> 29[0m     latent [38;5;241m=[39m [43mnp[49m[38;5;241;43m.[39;49m[43mconcatenate[49m[43m([49m[43m[[49m[43mnp[49m[38;5;241;43m.[39;49m[43masarray[49m[43m([49m[43mobs[49m[43m[[49m[43mk[49m[43m][49m[43m)[49m[43m [49m[38;5;28;43;01mfor[39;49;00m[43m [49m[43mk[49m[43m [49m[38;5;129;43;01min[39;49;00m[43m [49m[43mobs_keys[49m[43m][49m[43m)[49m
+[1;32m     30[0m     latents_list[38;5;241m.[39mappend(latent)
+[1;32m     32[0m     [38;5;66;03m# Act[39;00m
+
+[0;31mValueError[0m: all the input array dimensions except for the concatenation axis must match exactly, but along dimension 1, the array at index 0 has size 10 and the array at index 1 has size 3
+

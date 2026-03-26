@@ -1,0 +1,209 @@
+[NbConvertApp] Converting notebook experiments/2026-03-26/oracle_discounted_returns.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Run oracle evaluation for all 12 policies ──
+# Uses _rollout_with_reward_fn which records per-step obs (including final next_obs
+# on success termination — avoids the known Bug #1 in rollout.py).
+
+results = {}
+t0_all = time.time()
+
+for i, pol in enumerate(TARGET_POLICIES):
+    name = pol["name"]
+    run_dir = CKPT_BASE / pol["dir"]
+    ckpt_path = pol["ckpt"]
+
+    print(f"\n[{i+1}/{len(TARGET_POLICIES)}] {name}")
+    print(f"  Checkpoint: {run_dir / ckpt_path}")
+
+    t0 = time.time()
+    ckpt = load_checkpoint(run_dir, ckpt_path=Path(ckpt_path))
+    result = oracle_value(
+        ckpt,
+        num_rollouts=NUM_ROLLOUTS,
+        horizon=HORIZON,
+        gamma=GAMMA,
+        device=DEVICE,
+        verbose=True,
+        num_workers=0,       # required for reward_fn path
+        reward_fn=reward_fn,
+        encoder=encoder,
+    )
+    elapsed = time.time() - t0
+
+    results[name] = {
+        "mean_return": result.mean_return,
+        "std_return": result.std_return,
+        "per_rollout_returns": result.returns.tolist(),
+        "gamma": GAMMA,
+        "horizon": HORIZON,
+        "num_rollouts": NUM_ROLLOUTS,
+    }
+
+    print(f"  mean={result.mean_return:.3f} +/- {result.std_return:.3f}  "
+          f"(min={result.returns.min():.1f}, max={result.returns.max():.1f})  "
+          f"[{elapsed:.0f}s]")
+
+total_time = time.time() - t0_all
+print(f"\nTotal time: {total_time:.0f}s ({total_time/60:.1f} min)")
+------------------
+
+----- stdout -----
+
+[1/12] 50demos_epoch10
+  Checkpoint: /home1/reishuen/latent_sope/third_party/robomimic/diffusion_policy_trained_models/lift_diffusion_50demos/20260311134204/models/model_epoch_10.pth
+----- stdout -----
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_quat', 'robot0_gripper_qpos', 'robot0_eef_pos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+----- stdout -----
+number of parameters: 6.576359e+07
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mNo private macro file found! (macros.py:57)
+----- stderr -----
+WARNING:robosuite_logs:No private macro file found!
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mIt is recommended to use a private macro file (macros.py:58)
+----- stderr -----
+WARNING:robosuite_logs:It is recommended to use a private macro file
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mTo setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py (macros.py:59)
+----- stderr -----
+WARNING:robosuite_logs:To setup, run: python /home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/robosuite/scripts/setup_macros.py
+----- stdout -----
+
+============= Initialized Observation Utils with Obs Spec =============
+
+using obs modality: low_dim with keys: ['object', 'robot0_eef_quat', 'robot0_gripper_qpos', 'robot0_eef_pos']
+using obs modality: rgb with keys: []
+using obs modality: depth with keys: []
+using obs modality: scan with keys: []
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mCould not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install. (__init__.py:30)
+----- stderr -----
+WARNING:robosuite_logs:Could not import robosuite_models. Some robots may not be available. If you want to use these robots, please install robosuite_models from source (https://github.com/ARISE-Initiative/robosuite_models) or through pip install.
+----- stderr -----
+[1m[33m[robosuite WARNING] [0mCould not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot. (__init__.py:40)
+----- stderr -----
+WARNING:robosuite_logs:Could not load the mink-based whole-body IK. Make sure you install related import properly, otherwise you will not be able to use the default IK controller setting for GR1 robot.
+----- stdout -----
+Created environment with name Lift
+Action size is 7
+[33mROBOMIMIC WARNING(
+    Dataset and installed environment version mismatch!
+    Dataset environment version: 1.5.1
+    Installed environment version: 1.5.2
+)[0m
+----- stdout -----
+ObservationKeyToModalityDict: robot0_joint_pos not found, adding robot0_joint_pos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_cos not found, adding robot0_joint_pos_cos to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_pos_sin not found, adding robot0_joint_pos_sin to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_vel not found, adding robot0_joint_vel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_joint_acc not found, adding robot0_joint_acc to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_eef_quat_site not found, adding robot0_eef_quat_site to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: robot0_gripper_qvel not found, adding robot0_gripper_qvel to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: lang_emb not found, adding lang_emb to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: timesteps not found, adding timesteps to mapping with assumed low_dim modality!
+ObservationKeyToModalityDict: actions not found, adding actions to mapping with assumed low_dim modality!
+------------------
+
+[0;31m---------------------------------------------------------------------------[0m
+[0;31mValueError[0m                                Traceback (most recent call last)
+Cell [0;32mIn[2], line 18[0m
+[1;32m     16[0m t0 [38;5;241m=[39m time[38;5;241m.[39mtime()
+[1;32m     17[0m ckpt [38;5;241m=[39m load_checkpoint(run_dir, ckpt_path[38;5;241m=[39mPath(ckpt_path))
+[0;32m---> 18[0m result [38;5;241m=[39m [43moracle_value[49m[43m([49m
+[1;32m     19[0m [43m    [49m[43mckpt[49m[43m,[49m
+[1;32m     20[0m [43m    [49m[43mnum_rollouts[49m[38;5;241;43m=[39;49m[43mNUM_ROLLOUTS[49m[43m,[49m
+[1;32m     21[0m [43m    [49m[43mhorizon[49m[38;5;241;43m=[39;49m[43mHORIZON[49m[43m,[49m
+[1;32m     22[0m [43m    [49m[43mgamma[49m[38;5;241;43m=[39;49m[43mGAMMA[49m[43m,[49m
+[1;32m     23[0m [43m    [49m[43mdevice[49m[38;5;241;43m=[39;49m[43mDEVICE[49m[43m,[49m
+[1;32m     24[0m [43m    [49m[43mverbose[49m[38;5;241;43m=[39;49m[38;5;28;43;01mTrue[39;49;00m[43m,[49m
+[1;32m     25[0m [43m    [49m[43mnum_workers[49m[38;5;241;43m=[39;49m[38;5;241;43m0[39;49m[43m,[49m[43m       [49m[38;5;66;43;03m# required for reward_fn path[39;49;00m
+[1;32m     26[0m [43m    [49m[43mreward_fn[49m[38;5;241;43m=[39;49m[43mreward_fn[49m[43m,[49m
+[1;32m     27[0m [43m    [49m[43mencoder[49m[38;5;241;43m=[39;49m[43mencoder[49m[43m,[49m
+[1;32m     28[0m [43m[49m[43m)[49m
+[1;32m     29[0m elapsed [38;5;241m=[39m time[38;5;241m.[39mtime() [38;5;241m-[39m t0
+[1;32m     31[0m results[name] [38;5;241m=[39m {
+[1;32m     32[0m     [38;5;124m"[39m[38;5;124mmean_return[39m[38;5;124m"[39m: result[38;5;241m.[39mmean_return,
+[1;32m     33[0m     [38;5;124m"[39m[38;5;124mstd_return[39m[38;5;124m"[39m: result[38;5;241m.[39mstd_return,
+[0;32m   (...)[0m
+[1;32m     37[0m     [38;5;124m"[39m[38;5;124mnum_rollouts[39m[38;5;124m"[39m: NUM_ROLLOUTS,
+[1;32m     38[0m }
+
+File [0;32m~/latent_sope/src/latent_sope/eval/oracle.py:220[0m, in [0;36moracle_value[0;34m(ckpt, num_rollouts, horizon, gamma, device, verbose, num_workers, reward_fn, encoder)[0m
+[1;32m    217[0m [38;5;28;01mfor[39;00m i [38;5;129;01min[39;00m [38;5;28mrange[39m(num_rollouts):
+[1;32m    218[0m     [38;5;28;01mif[39;00m reward_fn [38;5;129;01mis[39;00m [38;5;129;01mnot[39;00m [38;5;28;01mNone[39;00m:
+[1;32m    219[0m         [38;5;66;03m# Run rollout and re-score with the provided reward function[39;00m
+[0;32m--> 220[0m         stats, per_step_rewards [38;5;241m=[39m [43m_rollout_with_reward_fn[49m[43m([49m
+[1;32m    221[0m [43m            [49m[43mpolicy[49m[43m,[49m[43m [49m[43menv[49m[43m,[49m[43m [49m[43mhorizon[49m[43m,[49m[43m [49m[43mreward_fn[49m[43m,[49m[43m [49m[43mencoder[49m[43m,[49m
+[1;32m    222[0m [43m        [49m[43m)[49m
+[1;32m    223[0m         discounts [38;5;241m=[39m gamma [38;5;241m*[39m[38;5;241m*[39m np[38;5;241m.[39marange([38;5;28mlen[39m(per_step_rewards))
+[1;32m    224[0m         returns[i] [38;5;241m=[39m [38;5;28mfloat[39m((discounts [38;5;241m*[39m per_step_rewards)[38;5;241m.[39msum())
+
+File [0;32m~/latent_sope/src/latent_sope/eval/oracle.py:147[0m, in [0;36m_rollout_with_reward_fn[0;34m(policy, env, horizon, reward_fn, encoder)[0m
+[1;32m    142[0m T [38;5;241m=[39m [38;5;28mlen[39m(obs_list)
+[1;32m    143[0m latents [38;5;241m=[39m np[38;5;241m.[39mconcatenate(
+[1;32m    144[0m     [np[38;5;241m.[39mstack([obs_list[t][k] [38;5;28;01mfor[39;00m t [38;5;129;01min[39;00m [38;5;28mrange[39m(T)]) [38;5;28;01mfor[39;00m k [38;5;129;01min[39;00m obs_keys],
+[1;32m    145[0m     axis[38;5;241m=[39m[38;5;241m-[39m[38;5;241m1[39m,
+[1;32m    146[0m )  [38;5;66;03m# (T, state_dim)[39;00m
+[0;32m--> 147[0m obs_dict [38;5;241m=[39m [43mencoder[49m[38;5;241;43m.[39;49m[43mdecode_to_obs_dict[49m[43m([49m[43mlatents[49m[43m)[49m
+[1;32m    148[0m per_step_rewards [38;5;241m=[39m reward_fn(obs_dict)[38;5;241m.[39mastype(np[38;5;241m.[39mfloat64)
+[1;32m    150[0m stats [38;5;241m=[39m RolloutStats(
+[1;32m    151[0m     total_reward[38;5;241m=[39mtotal_env_reward,
+[1;32m    152[0m     horizon[38;5;241m=[39m(step_i [38;5;241m+[39m [38;5;241m1[39m),
+[1;32m    153[0m     success_rate[38;5;241m=[39m[38;5;28mfloat[39m(success),
+[1;32m    154[0m )
+
+File [0;32m~/latent_sope/src/latent_sope/robomimic_interface/encoders.py:114[0m, in [0;36mLowDimConcatEncoder.decode_to_obs_dict[0;34m(self, z)[0m
+[1;32m    112[0m     z [38;5;241m=[39m z[[38;5;28;01mNone[39;00m, :]
+[1;32m    113[0m [38;5;28;01mif[39;00m z[38;5;241m.[39mndim [38;5;241m!=[39m [38;5;241m2[39m:
+[0;32m--> 114[0m     [38;5;28;01mraise[39;00m [38;5;167;01mValueError[39;00m([38;5;124mf[39m[38;5;124m"[39m[38;5;124mExpected z with shape (T, D) or (D,), got [39m[38;5;132;01m{[39;00mz[38;5;241m.[39mshape[38;5;132;01m}[39;00m[38;5;124m"[39m)
+[1;32m    116[0m obs_shapes [38;5;241m=[39m [38;5;28mgetattr[39m([38;5;28mself[39m, [38;5;124m"[39m[38;5;124mobs_shapes[39m[38;5;124m"[39m, [38;5;28;01mNone[39;00m)
+[1;32m    117[0m obs_dims [38;5;241m=[39m [38;5;28mgetattr[39m([38;5;28mself[39m, [38;5;124m"[39m[38;5;124mobs_dims[39m[38;5;124m"[39m, [38;5;28;01mNone[39;00m)
+
+[0;31mValueError[0m: Expected z with shape (T, D) or (D,), got (60, 2, 19)
+
