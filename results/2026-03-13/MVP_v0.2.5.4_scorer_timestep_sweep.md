@@ -19,7 +19,7 @@ that corrected (much smaller) `action_scale` values produce useful guidance.
 
 ## Part 1: Score Timestep Sweep
 
-| t | sigma | 1/sigma | dir%@0.1 | dir%@0.01 | |grad|/|a| | GD conv% | GD impr% |
+| t | sigma | 1/sigma | dir%@0.1 | dir%@0.01 | \|grad\|/\|a\| | GD conv% | GD impr% |
 |---|-------|---------|----------|-----------|-----------|----------|----------|
 | 1 | 0.042 | 23.9x | **10%** | 100% | 13.28 | 90% | 60% |
 | 2 | 0.058 | 17.3x | 60% | 100% | 9.11 | 100% | 63% |
@@ -27,6 +27,22 @@ that corrected (much smaller) `action_scale` values produce useful guidance.
 | **10** | **0.182** | **5.5x** | **100%** | **100%** | **2.82** | **100%** | **72%** |
 | 20 | 0.333 | 3.0x | 100% | 100% | 1.32 | 100% | 67% |
 | 50 | 0.722 | 1.4x | 100% | 100% | 0.64 | 100% | 50% |
+
+**Column definitions:**
+- **t**: Diffusion timestep at which the scorer computes its score. Each timestep
+  corresponds to a noise level — low t = almost clean data, high t = very noisy.
+- **sigma**: Noise standard deviation at that timestep.
+- **1/sigma**: Inverse noise scale — how much the score function amplifies its
+  output. At low t, sigma is tiny so gradients get scaled up enormously.
+- **dir%@0.1 / dir%@0.01**: Direction accuracy. Perturb an action away from
+  what the policy would choose, then check whether the scorer's gradient points
+  back toward the correct action. Tested at two learning rates (step sizes).
+- **|grad|/|a|**: Gradient magnitude relative to action magnitude. Indicates
+  how aggressively the score would steer actions per update step.
+- **GD conv%**: Percentage of test cases where multi-step gradient descent
+  converges to a better action.
+- **GD impr%**: Average improvement in log-probability after gradient descent
+  converges — the key quality metric for how much better the action gets.
 
 **Interpretation:**
 - t=1: gradient direction is correct but magnitude too large (13x actions).
