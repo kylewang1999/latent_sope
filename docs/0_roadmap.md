@@ -1,5 +1,13 @@
 # TODOs
 
+## 2026-03-26, W13
+
+1\. Q: How is [`rei/src/latent_sope/robomimic_interface/guidance.py`](../../rei/src/latent_sope/robomimic_interface/guidance.py) used?
+- Implement my version of the guidance and check if it works.
+2\. Verify SOPE diffusion is good on [`rmimic-lift-ph-lowdim_diffusion_260130`](../../data/policy/rmimic-lift-ph-lowdim_diffusion_260130/rollout.mp4).
+3. Is normalization stats computed/used properly?
+
+
 ## 2026-03-11, W9
 
 ### Questions & Discussions

@@ -80,6 +80,8 @@ class EnvironmentConfig:
 - Record enough metadata to reproduce a run: code version, config, seed, dataset identifier, and checkpoint path.
 - Prefer explicit validation and evaluation entrypoints over embedding all checks inside the training loop.
 - When changing training behavior, state whether the change affects optimization, sampling, data flow, or only logging and instrumentation.
+- When training from many rollout trajectory files, prefer file-level splits over chunk-level splits for train / eval so chunks from the same trajectory do not leak across splits.
+- For count-like scheduling knobs such as `num_evals` and `num_saves`, convert them into epoch intervals inside the training code. `num_evals` should use floored division `epochs // num_evals` with a clamp to at least `1` when enabled, while `num_saves` should remain conservative and use a ceil-based interval so requested checkpoint counts are not undershot.
 
 ### 2.8. Reproducibility
 

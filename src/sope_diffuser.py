@@ -11,7 +11,7 @@ import torch.nn as nn
 import einops
 
 # Ensure `opelab` is importable when using third_party/sope in-place.
-_SOPE_ROOT = Path(__file__).resolve().parents[3] / "third_party" / "sope"
+_SOPE_ROOT = Path(__file__).resolve().parents[1] / "third_party" / "sope"
 if str(_SOPE_ROOT) not in sys.path:
     sys.path.append(str(_SOPE_ROOT))
 

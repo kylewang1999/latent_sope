@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ============================================================
 # latent_sope bootstrap (Strategy A)
-# Keep modern JAX + install robomimic, then override old pinned:
+# Keep modern JAX and avoid robomimic's stale Hugging Face pins:
 #   - diffusers==0.11.1 (too old; breaks with modern JAX)
 #   - transformers==4.41.2, huggingface_hub==0.23.4
 #
@@ -101,7 +101,22 @@ python -m pip install --upgrade \
   matplotlib seaborn \
   tqdm rich ipython ipykernel jupyter ipywidgets \
   h5py pyyaml \
+  gdown \
   wandb
+
+# ----------------------------
+# robomimic / HF runtime deps
+# Install these explicitly so we can keep modern JAX-compatible versions
+# without letting robomimic's setup.py re-pin old diffusers packages.
+# ----------------------------
+python -m pip install --upgrade \
+  psutil termcolor \
+  tensorboard tensorboardX \
+  imageio imageio-ffmpeg \
+  "huggingface_hub>=0.23.4" \
+  "transformers>=4.56.0" \
+  "diffusers>=0.28.0" \
+  accelerate safetensors
 
 # ----------------------------
 # Mujoco / robosuite / gym
@@ -140,11 +155,11 @@ python -m pip install -U 'mujoco-py<2.2,>=2.1'
 
 # ----------------------------
 # robomimic (editable)
-# Install as usual, THEN override old huggingface/diffusers pins afterwards.
+# Install without dependencies so setup.py cannot re-pin old diffusers.
 # ----------------------------
 echo "[INFO] Installing robomimic from submodule (editable)..."
 cd "${ROBOMIMIC_DIR}"
-python -m pip install -e .
+python -m pip install -e . --no-deps --no-build-isolation
 cd "${REPO_ROOT}"
 
 echo "[INFO] Installing clean_diffuser from submodule (editable)..."
@@ -160,18 +175,15 @@ python -m pip install --upgrade \
   mediapy
 
 # ----------------------------
-# Override robomimic's pinned huggingface/diffusers stack
-# (This is the key fix for the KeyArray error.)
-# ----------------------------
-python -m pip install --upgrade \
-  "diffusers>=0.28.0" \
-  "transformers>=4.56.0" \
-  "huggingface_hub" \
-  accelerate safetensors
-
-# ----------------------------
 # Smoke tests
 # ----------------------------
+echo "[INFO] Verifying PyTorch..."
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+PY
+
 echo "[INFO] Verifying JAX..."
 python - <<'PY'
 import jax
@@ -198,4 +210,4 @@ echo "[DONE] Latent SOPE bootstrap complete."
 echo "If DINOv3 weights require HF auth, run: huggingface-cli login"
 
 # For stitch-ope repo
-pip install git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl
+python -m pip install git+https://github.com/Farama-Foundation/d4rl@master#egg=d4rl

@@ -27,27 +27,47 @@ if TYPE_CHECKING:
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_D4RL_DATA_DIR = Path(os.environ["D4RL_DATASET_DIR"]) if "D4RL_DATASET_DIR" in os.environ else _REPO_ROOT / "data" / "d4rl"
 
-def _warp_angle(th: Any, center: float = np.pi) -> Any:
-    import jax.numpy as jnp
 
-    return jnp.mod(th + center, 2 * jnp.pi) - center
+@dataclass(frozen=True)
+class ProjectPaths:
+    repo_root: Path = _REPO_ROOT
+    src_root: Path = _REPO_ROOT / "src"
+    scripts_root: Path = _REPO_ROOT / "scripts"
+    docs_root: Path = _REPO_ROOT / "docs"
+    logs_dir: Path = _REPO_ROOT / "logs"
+    configs_dir: Path = _REPO_ROOT / "configs"
+    third_party_root: Path = _REPO_ROOT / "third_party"
+    safediffuser_root: Path = _REPO_ROOT / "third_party" / "safe_diffuser"
+    safediffuser_d4rl_path: Path = safediffuser_root / "diffuser" / "datasets" / "d4rl.py"
+    d4rl_root: Path = _REPO_ROOT / "third_party" / "d4rl"
+    d4rl_data_dir: Path = _D4RL_DATA_DIR
+    robomimic_root: Path = _REPO_ROOT / "third_party" / "robomimic"
+    robomimic_diffusion_models_root: Path = robomimic_root / "diffusion_policy_trained_models"
+    default_rollout_latents_path: Path = (
+        robomimic_diffusion_models_root / "test" / "20260130145148" / "rollout_latents.h5"
+    )
+
+
+PATHS = ProjectPaths()
 
 
 def get_repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return PATHS.repo_root
 
 
 def make_log_dir(description: str = "", verbose: bool = True) -> str:
     suffix = f"{description}_" if description else ""
-    log_dir = get_repo_root() / "logs" / f"{suffix}{time.strftime('%m%d_%H%M%S')}"
+    log_dir = PATHS.logs_dir / f"{suffix}{time.strftime('%m%d_%H%M%S')}"
     log_dir.mkdir(parents=True, exist_ok=True)
     if verbose:
         CONSOLE_LOGGER.info("Log directory created at %s", log_dir)
     return str(log_dir)
 
 
-def get_console_logger(name: str = "rssm_torch", level: str = "INFO") -> logging.Logger:
+def get_console_logger(name: str = "wkt_sope", level: str = "INFO") -> logging.Logger:
     """Return a colored console logger without duplicate handlers."""
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -72,7 +92,7 @@ def load_configs(
 ):
     import hydra
 
-    config_root = Path(config_dir) if config_dir is not None else get_repo_root() / "configs"
+    config_root = Path(config_dir) if config_dir is not None else PATHS.configs_dir
     with hydra.initialize_config_dir(config_dir=str(config_root), version_base=None):
         cfg = hydra.compose(config_name=config_name)
     return cfg
@@ -264,9 +284,10 @@ CONSOLE_LOGGER = get_console_logger()
 
 
 __all__ = [
-    "_warp_angle",
     "CONSOLE_LOGGER",
     "DeviceConfig",
+    "PATHS",
+    "ProjectPaths",
     "catch_keyboard_interrupt",
     "display_video",
     "get_console_logger",

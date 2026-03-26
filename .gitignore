@@ -8,5 +8,7 @@ data/
 scripts/
 logs*/
 *datasets/
+wandb/
 
 *.hdf5
+*.txt

@@ -4,19 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Set
 from copy import deepcopy
 from collections import OrderedDict
 import h5py
 
 import torch
 import numpy as np
-from robomimic.algo import RolloutPolicy, PolicyAlgo
-from robomimic.utils import tensor_utils as TensorUtils
-from robomimic.envs.env_base import EnvBase
 
 from src.robomimic_interface.encoders import resolve_module
 from src.utils import timeit
+
+if TYPE_CHECKING:
+    from robomimic.algo import RolloutPolicy, PolicyAlgo
+    from robomimic.envs.env_base import EnvBase
+else:
+    RolloutPolicy = Any
+    PolicyAlgo = Any
+    EnvBase = Any
 
 @dataclass
 class RolloutStats:
@@ -118,6 +123,7 @@ class PolicyFeatureHook:
         through @update_latent_from_obs by running the policy's pass forcefully using 
         @TensorUtils.time_distributed
         """
+        from robomimic.utils import tensor_utils as TensorUtils
         
         def _prepare_obs_inputs(obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             prep: RolloutPolicy = self.policy if hasattr(self.policy, "_prepare_observation") else getattr(self.policy, "policy", None)

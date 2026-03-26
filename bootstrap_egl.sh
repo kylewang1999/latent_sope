@@ -20,6 +20,78 @@ if [[ -z "${CONDA_PREFIX:-}" ]]; then
   exit 1
 fi
 
+echo "[INFO] Checking Hugging Face / JAX compatibility..."
+python - <<'PY'
+from __future__ import annotations
+
+import importlib
+import subprocess
+import sys
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    parts = []
+    for piece in version.split("."):
+        digits = []
+        for ch in piece:
+            if ch.isdigit():
+                digits.append(ch)
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int("".join(digits)))
+    return tuple(parts)
+
+
+need_fix = False
+jax_version = None
+diffusers_version = None
+
+try:
+    jax = importlib.import_module("jax")
+    jax_version = getattr(jax, "__version__", "0")
+    has_keyarray = hasattr(jax.random, "KeyArray")
+except Exception:
+    has_keyarray = True
+
+try:
+    diffusers = importlib.import_module("diffusers")
+    diffusers_version = getattr(diffusers, "__version__", "0")
+except Exception:
+    diffusers_version = None
+
+if jax_version is not None and version_tuple(jax_version) >= (0, 5):
+    if diffusers_version is None or version_tuple(diffusers_version) < (0, 28, 0) or not has_keyarray:
+        need_fix = True
+
+if need_fix:
+    print(
+        "[INFO] Upgrading diffusers / transformers / huggingface_hub "
+        "to avoid old diffusers + new JAX incompatibilities."
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "diffusers>=0.28.0",
+            "transformers>=4.56.0",
+            "huggingface_hub>=0.23.4",
+            "accelerate",
+            "safetensors",
+        ],
+        check=True,
+    )
+else:
+    print(
+        "[INFO] Existing diffusers / JAX combination looks compatible; "
+        "leaving Hugging Face packages unchanged."
+    )
+PY
+
 ACTIVATE_D="${CONDA_PREFIX}/etc/conda/activate.d"
 DEACTIVATE_D="${CONDA_PREFIX}/etc/conda/deactivate.d"
 

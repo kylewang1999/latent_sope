@@ -110,7 +110,7 @@ class RolloutChunkDataset:
         self.states_to = np.stack(states_to_list, axis=0).astype(np.float32)  # (N, chunk_size + 1, Dz)
         self.actions_to = np.stack(actions_to_list, axis=0).astype(np.float32)  # (N, chunk_size, Da)
         self.actions_from = np.stack(actions_from_list, axis=0).astype(np.float32)  # (N, frame_stack, Da)
-        self.t0 = np.asarray(t0_list, dtype=np.int64)
+        self.t0 = np.asarray(t0_list, dtype=np.int32)
         self._validate_data_shapes()
 
         self.latents_dim = int(self.latents.shape[-1])
@@ -195,11 +195,11 @@ class RolloutChunkDataset:
             "actions_to": actions_to_t,
             "metadata": (
                 {
-                    "index": int(idx),
+                    "index": torch.tensor(int(idx), dtype=torch.int32),
                     "demo_id": self.demo_id,
-                    "t0": int(self.t0[idx]),  # start of chunk
-                    "t1": int(self.t0[idx] + self.config.chunk_size),  # end of chunk
-                    "frame_stack": int(self.config.frame_stack),
+                    "t0": torch.tensor(int(self.t0[idx]), dtype=torch.int32),  # start of chunk
+                    "t1": torch.tensor(int(self.t0[idx] + self.config.chunk_size), dtype=torch.int32),  # end of chunk
+                    "frame_stack": torch.tensor(int(self.config.frame_stack), dtype=torch.int32),
                 }
                 if self.return_metadata
                 else None
@@ -233,10 +233,20 @@ def make_rollout_chunk_dataloader(
     obs_keys: Optional[Sequence[str]] = None,
     encoder_device: str = "cuda",
 ) -> Tuple[DataLoader, Optional[NormalizationStats]]:
-    """Prepare a DataLoader from saved rollouts for chunk diffusion training.
-    This works with multiple rollout latent .h5 files and will automatically 
-    create @RolloutChunkDataset objects for each file and concatenate 
-    them into a single @ConcatDataset.
+    """Prepare a chunked rollout DataLoader from one or more rollout locations.
+
+    Expected `paths` behavior:
+    - If `paths` is a singleton list whose only element is a directory, that
+      directory is scanned for rollout files matching `*.npz`, `*.h5`, and
+      `*.hdf5`, and every discovered file is loaded.
+    - If `paths` is a list of rollout file paths, each listed file is loaded
+      directly.
+    - Mixed inputs are also allowed: directory entries are expanded, file
+      entries are used as-is.
+
+    Each resolved rollout file becomes its own `RolloutChunkDataset`. If more
+    than one rollout file is resolved, the per-file datasets are combined into a
+    single `ConcatDataset` before building the `DataLoader`.
     """
     rollout_paths = _resolve_rollout_paths(paths)
     pre_traj_config = replace(
