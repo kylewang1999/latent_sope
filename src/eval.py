@@ -17,15 +17,15 @@ if TYPE_CHECKING:
 NP_FLOAT = np.float32
 
 
-@dataclass(frozen=True)
+@dataclass
 class RMSEMetrics:
     loss: Optional[float] = None
+    rmse_eef_pos: Optional[float] = None
+    mean_eef_pos: Optional[float] = None
+    mean_eef_pos_gt: Optional[float] = None
     rmse_transition: Optional[float] = None
     rmse_state: Optional[float] = None
     rmse_action: Optional[float] = None
-    rmse_per_step_transition: Optional[np.ndarray] = None
-    rmse_per_step_state: Optional[np.ndarray] = None
-    rmse_per_step_action: Optional[np.ndarray] = None
     mean_transition: Optional[float] = None
     mean_state: Optional[float] = None
     mean_action: Optional[float] = None
@@ -37,9 +37,9 @@ class RMSEMetrics:
     state_dim: Optional[int] = None
     action_dim: Optional[int] = None
     trajectory_lengths: Optional[np.ndarray] = None
-    local_stats: Optional[dict[str, float]] = None # chunk or trajectory-level stats (mean, var)
+    local_stats: Optional[dict[str, Any]] = None # chunk or trajectory-level stats (mean, var)
 
-@dataclass(frozen=True)
+@dataclass
 class RMSEMetricsReport:
     unguided: dict[str, RMSEMetrics]
     guided: Optional[dict[str, RMSEMetrics]]
@@ -60,16 +60,18 @@ def _build_eval_summary_metrics(
 
     unguided_metrics = report.unguided.get("gen_unnormalized")
     if unguided_metrics is not None:
-        for field in ("loss", "rmse_action", "rmse_state", "rmse_transition"):
+        for field in ("loss", "rmse_action", "rmse_eef_pos", "rmse_state", "rmse_transition"):
             value = getattr(unguided_metrics, field)
             if value is None:
                 continue
             summary[f"eval_metrics:unguided/{field}"] = float(value)
         for field in (
             "mean_action",
+            "mean_eef_pos",
             "mean_state",
             "mean_transition",
             "mean_action_gt",
+            "mean_eef_pos_gt",
             "mean_state_gt",
             "mean_transition_gt",
         ):
@@ -80,16 +82,18 @@ def _build_eval_summary_metrics(
 
     guided_metrics = None if report.guided is None else report.guided.get("gen_unnormalized")
     if guided_metrics is not None:
-        for field in ("loss", "rmse_action", "rmse_state", "rmse_transition"):
+        for field in ("loss", "rmse_action", "rmse_eef_pos", "rmse_state", "rmse_transition"):
             value = getattr(guided_metrics, field)
             if value is None:
                 continue
             summary[f"eval_metrics:guided/{field}"] = float(value)
         for field in (
             "mean_action",
+            "mean_eef_pos",
             "mean_state",
             "mean_transition",
             "mean_action_gt",
+            "mean_eef_pos_gt",
             "mean_state_gt",
             "mean_transition_gt",
         ):
@@ -179,62 +183,39 @@ def _sample_future_chunk_normalized(
         verbose=verbose,
         **(guidance_kw or {}),
     )
-    return sample.trajectories[:, diffuser.cfg.frame_stack :, :]
+    return sample.trajectories[:, diffuser.cfg.frame_stack:, :]
 
 
-def _compute_chunk_metrics(
-    sum_sq_transition: float,
-    sum_sq_state: float,
-    sum_sq_action: float,
-    sum_sq_transition_per_step: np.ndarray,
-    sum_sq_state_per_step: np.ndarray,
-    sum_sq_action_per_step: np.ndarray,
-    sum_transition: float,
-    sum_state: float,
-    sum_action: float,
-    sum_transition_gt: float,
-    sum_state_gt: float,
-    sum_action_gt: float,
-    *,
-    num_chunks: int,
-    chunk_horizon: int,
-    state_dim: int,
-    action_dim: int,
-) -> RMSEMetrics:
-    total_steps = max(num_chunks * chunk_horizon, 1)
-    transition_dim = state_dim + action_dim
+def _finalize_chunk_metrics(metrics: RMSEMetrics) -> RMSEMetrics:
+    if metrics.num_samples <= 0:
+        raise ValueError("No evaluation chunks were processed.")
+    if metrics.horizon is None or metrics.state_dim is None or metrics.action_dim is None:
+        raise ValueError("Chunk metric accumulator is missing shape metadata.")
+
+    total_steps = max(metrics.num_samples * metrics.horizon, 1)
+    transition_dim = metrics.state_dim + metrics.action_dim
     denom_transition = max(total_steps * transition_dim, 1)
-    denom_state = max(total_steps * state_dim, 1)
-    denom_action = max(total_steps * action_dim, 1)
+    denom_state = max(total_steps * metrics.state_dim, 1)
+    denom_action = max(total_steps * metrics.action_dim, 1)
+    eef_pos_dim = None
+    if metrics.rmse_eef_pos is not None:
+        eef_pos_dim = 3
 
-    transition_mse = sum_sq_transition / denom_transition
-    state_mse = sum_sq_state / denom_state
-    action_mse = sum_sq_action / denom_action
-
-    transition_rmse_per_step = np.sqrt(
-        sum_sq_transition_per_step / max(num_chunks * transition_dim, 1)
-    )
-    state_rmse_per_step = np.sqrt(sum_sq_state_per_step / max(num_chunks * state_dim, 1))
-    action_rmse_per_step = np.sqrt(sum_sq_action_per_step / max(num_chunks * action_dim, 1))
-
-    return RMSEMetrics(
-        mean_transition=float(sum_transition / denom_transition),
-        mean_state=float(sum_state / denom_state),
-        mean_action=float(sum_action / denom_action),
-        mean_transition_gt=float(sum_transition_gt / denom_transition),
-        mean_state_gt=float(sum_state_gt / denom_state),
-        mean_action_gt=float(sum_action_gt / denom_action),
-        rmse_transition=float(np.sqrt(transition_mse)),
-        rmse_state=float(np.sqrt(state_mse)),
-        rmse_action=float(np.sqrt(action_mse)),
-        rmse_per_step_transition=transition_rmse_per_step.astype(NP_FLOAT),
-        rmse_per_step_state=state_rmse_per_step.astype(NP_FLOAT),
-        rmse_per_step_action=action_rmse_per_step.astype(NP_FLOAT),
-        num_samples=int(num_chunks),
-        horizon=int(chunk_horizon),
-        state_dim=int(state_dim),
-        action_dim=int(action_dim),
-    )
+    metrics.mean_transition = float(metrics.mean_transition / denom_transition)
+    metrics.mean_state = float(metrics.mean_state / denom_state)
+    metrics.mean_action = float(metrics.mean_action / denom_action)
+    metrics.mean_transition_gt = float(metrics.mean_transition_gt / denom_transition)
+    metrics.mean_state_gt = float(metrics.mean_state_gt / denom_state)
+    metrics.mean_action_gt = float(metrics.mean_action_gt / denom_action)
+    metrics.rmse_transition = float(np.sqrt(metrics.rmse_transition / denom_transition))
+    metrics.rmse_state = float(np.sqrt(metrics.rmse_state / denom_state))
+    metrics.rmse_action = float(np.sqrt(metrics.rmse_action / denom_action))
+    if eef_pos_dim is not None:
+        denom_eef_pos = max(total_steps * eef_pos_dim, 1)
+        metrics.mean_eef_pos = float(metrics.mean_eef_pos / denom_eef_pos)
+        metrics.mean_eef_pos_gt = float(metrics.mean_eef_pos_gt / denom_eef_pos)
+        metrics.rmse_eef_pos = float(np.sqrt(metrics.rmse_eef_pos / denom_eef_pos))
+    return metrics
 
 
 def evaluate_diffusion_chunk_mse(
@@ -248,88 +229,81 @@ def evaluate_diffusion_chunk_mse(
 ) -> tuple[dict[str, RMSEMetrics], Optional[dict[str, RMSEMetrics]]]:
     eval_device = torch.device(device or diffuser.device)
     diffuser.diffusion.eval()
+    eef_pos_slice: Optional[slice] = None
+    if diffuser.state_dim >= 13:
+        resolve_eef_pos_slice = getattr(diffuser, "_resolve_eef_pos_slice", None)
+        if callable(resolve_eef_pos_slice):
+            try:
+                eef_pos_slice = resolve_eef_pos_slice()
+            except ValueError:
+                eef_pos_slice = None
 
-    def _init_accumulator() -> dict[str, Any]:
-        return {
-            "num_chunks": 0,
-            "sum_sq_transition": 0.0,
-            "sum_sq_state": 0.0,
-            "sum_sq_action": 0.0,
-            "sum_sq_transition_per_step": np.zeros(diffuser.cfg.chunk_horizon, dtype=NP_FLOAT),
-            "sum_sq_state_per_step": np.zeros(diffuser.cfg.chunk_horizon, dtype=NP_FLOAT),
-            "sum_sq_action_per_step": np.zeros(diffuser.cfg.chunk_horizon, dtype=NP_FLOAT),
-            "sum_transition": 0.0,
-            "sum_state": 0.0,
-            "sum_action": 0.0,
-            "sum_transition_gt": 0.0,
-            "sum_state_gt": 0.0,
-            "sum_action_gt": 0.0,
-        }
+    def _init_accumulator() -> RMSEMetrics:
+        metrics = RMSEMetrics(
+            rmse_transition=0.0,
+            rmse_state=0.0,
+            rmse_action=0.0,
+            mean_transition=0.0,
+            mean_state=0.0,
+            mean_action=0.0,
+            mean_transition_gt=0.0,
+            mean_state_gt=0.0,
+            mean_action_gt=0.0,
+            num_samples=0,
+            horizon=int(diffuser.cfg.chunk_horizon),
+            state_dim=int(diffuser.state_dim),
+            action_dim=int(diffuser.action_dim),
+        )
+        if eef_pos_slice is not None:
+            metrics.rmse_eef_pos = 0.0
+            metrics.mean_eef_pos = 0.0
+            metrics.mean_eef_pos_gt = 0.0
+        return metrics
 
     def _update_accumulator(
-        accumulator: dict[str, Any],
+        accumulator: RMSEMetrics,
         pred_chunk: torch.Tensor,
         gt_chunk: torch.Tensor,
     ) -> None:
         sq_err = (pred_chunk - gt_chunk) ** 2
         sq_err_state = sq_err[..., : diffuser.state_dim]
         sq_err_action = sq_err[..., diffuser.state_dim :]
-        pred_chunk_state = pred_chunk[..., : diffuser.state_dim] ** 2
-        pred_chunk_action = pred_chunk[..., diffuser.state_dim :] ** 2
-        gt_chunk_state = gt_chunk[..., : diffuser.state_dim] ** 2
-        gt_chunk_action = gt_chunk[..., diffuser.state_dim :] ** 2
+        if eef_pos_slice is not None:
+            sq_err_eef_pos = sq_err_state[..., eef_pos_slice]
+        pred_chunk = pred_chunk ** 2 
+        gt_chunk = gt_chunk ** 2
+        pred_chunk_state = pred_chunk[..., : diffuser.state_dim]
+        pred_chunk_action = pred_chunk[..., diffuser.state_dim :]
+        gt_chunk_state = gt_chunk[..., : diffuser.state_dim]
+        gt_chunk_action = gt_chunk[..., diffuser.state_dim :]
+        if eef_pos_slice is not None:
+            pred_chunk_eef_pos = pred_chunk_state[..., eef_pos_slice]
+            gt_chunk_eef_pos = gt_chunk_state[..., eef_pos_slice]
 
         batch_chunks = int(pred_chunk.shape[0])
-        accumulator["num_chunks"] += batch_chunks
-        accumulator["sum_sq_transition"] += float(sq_err.sum().item())
-        accumulator["sum_sq_state"] += float(sq_err_state.sum().item())
-        accumulator["sum_sq_action"] += float(sq_err_action.sum().item())
-        accumulator["sum_transition"] += float(pred_chunk.sum().item())
-        accumulator["sum_state"] += float(pred_chunk_state.sum().item())
-        accumulator["sum_action"] += float(pred_chunk_action.sum().item())
-        accumulator["sum_transition_gt"] += float(gt_chunk.sum().item())
-        accumulator["sum_state_gt"] += float(gt_chunk_state.sum().item())
-        accumulator["sum_action_gt"] += float(gt_chunk_action.sum().item())
-        accumulator["sum_sq_transition_per_step"] += (
-            sq_err.sum(dim=[0,2]).detach().cpu().numpy().astype(NP_FLOAT)
-        )
-        accumulator["sum_sq_state_per_step"] += (
-            sq_err_state.sum(dim=[0,2]).detach().cpu().numpy().astype(NP_FLOAT)
-        )
-        accumulator["sum_sq_action_per_step"] += (
-            sq_err_action.sum(dim=[0,2]).detach().cpu().numpy().astype(NP_FLOAT)
-        )
-
-    def _finalize_accumulator(accumulator: dict[str, Any]) -> RMSEMetrics:
-        if accumulator["num_chunks"] <= 0:
-            raise ValueError("No evaluation chunks were processed.")
-        return _compute_chunk_metrics(
-            sum_sq_transition=accumulator["sum_sq_transition"],
-            sum_sq_state=accumulator["sum_sq_state"],
-            sum_sq_action=accumulator["sum_sq_action"],
-            sum_sq_transition_per_step=accumulator["sum_sq_transition_per_step"],
-            sum_sq_state_per_step=accumulator["sum_sq_state_per_step"],
-            sum_sq_action_per_step=accumulator["sum_sq_action_per_step"],
-            sum_transition=accumulator["sum_transition"],
-            sum_state=accumulator["sum_state"],
-            sum_action=accumulator["sum_action"],
-            sum_transition_gt=accumulator["sum_transition_gt"],
-            sum_state_gt=accumulator["sum_state_gt"],
-            sum_action_gt=accumulator["sum_action_gt"],
-            num_chunks=accumulator["num_chunks"],
-            chunk_horizon=diffuser.cfg.chunk_horizon,
-            state_dim=diffuser.state_dim,
-            action_dim=diffuser.action_dim,
-        )
+        accumulator.num_samples += batch_chunks
+        accumulator.rmse_transition += float(sq_err.sum().item())
+        accumulator.rmse_state += float(sq_err_state.sum().item())
+        accumulator.rmse_action += float(sq_err_action.sum().item())
+        if eef_pos_slice is not None:
+            accumulator.rmse_eef_pos += float(sq_err_eef_pos.sum().item())
+        accumulator.mean_transition += float(pred_chunk.sum().item())
+        accumulator.mean_state += float(pred_chunk_state.sum().item())
+        accumulator.mean_action += float(pred_chunk_action.sum().item())
+        if eef_pos_slice is not None:
+            accumulator.mean_eef_pos += float(pred_chunk_eef_pos.sum().item())
+        accumulator.mean_transition_gt += float(gt_chunk.sum().item())
+        accumulator.mean_state_gt += float(gt_chunk_state.sum().item())
+        accumulator.mean_action_gt += float(gt_chunk_action.sum().item())
+        if eef_pos_slice is not None:
+            accumulator.mean_eef_pos_gt += float(gt_chunk_eef_pos.sum().item())
 
     def _accumulate(guided: bool) -> dict[str, RMSEMetrics]:
         sample_raw_acc = _init_accumulator()
         sample_norm_acc = _init_accumulator()
         baseline_raw_acc = _init_accumulator()
         baseline_norm_acc = _init_accumulator()
-        
-        fn_aggregate = lambda x: torch.linalg.norm(x, dim=-1).mean()
-        
+
         for batch in loader:
             batch_t = {
                 key: value.to(eval_device) if torch.is_tensor(value) else value
@@ -355,7 +329,7 @@ def evaluate_diffusion_chunk_mse(
             baseline_raw = diffuser.unnormalizer(baseline_norm)
 
             if max_chunks is not None:
-                remaining = max_chunks - sample_raw_acc["num_chunks"]
+                remaining = max_chunks - sample_raw_acc.num_samples
                 if remaining <= 0:
                     break
                 sample_norm = sample_norm[:remaining]
@@ -370,20 +344,21 @@ def evaluate_diffusion_chunk_mse(
             _update_accumulator(baseline_norm_acc, baseline_norm, gt_norm)
             _update_accumulator(baseline_raw_acc, baseline_raw, gt_raw)
 
-            if max_chunks is not None and sample_raw_acc["num_chunks"] >= max_chunks:
+            if max_chunks is not None and sample_raw_acc.num_samples >= max_chunks:
                 break
 
         return {
-            "gen_unnormalized": _finalize_accumulator(sample_raw_acc),
-            "gen_normalized": _finalize_accumulator(sample_norm_acc),
-            "baseline_unnormalized": _finalize_accumulator(baseline_raw_acc),
-            "baseline_normalized": _finalize_accumulator(baseline_norm_acc),
+            "gen_unnormalized": _finalize_chunk_metrics(sample_raw_acc), # Primary metric
+            "gen_normalized": _finalize_chunk_metrics(sample_norm_acc),
+            "baseline_unnormalized": _finalize_chunk_metrics(baseline_raw_acc),
+            "baseline_normalized": _finalize_chunk_metrics(baseline_norm_acc),
         }
 
-    unguided = _accumulate(guided=False)
-    guided_metrics = None
-    if evaluate_guided and getattr(diffuser.diffusion, "policy", None) is not None:
-        guided_metrics = _accumulate(guided=True)
+    with torch.no_grad():
+        unguided = _accumulate(guided=False)
+        guided_metrics = None
+        if evaluate_guided and getattr(diffuser.diffusion, "policy", None) is not None:
+            guided_metrics = _accumulate(guided=True)
 
     return unguided, guided_metrics
 
@@ -395,6 +370,7 @@ def evaluate_sope(
     loader: torch.utils.data.DataLoader,
     device: torch.device,
     *,
+    primary_metric_key: str = "gen_unnormalized",
     epoch: Optional[int] = None,
     step: Optional[int] = None,
     run: Optional[Any] = None,
@@ -423,32 +399,20 @@ def evaluate_sope(
         evaluate_guided=False,
     )
     eval_loss = loss_sum / max(batches, 1)
-    primary_metrics = unguided_chunk_eval["gen_unnormalized"]
-    unguided_chunk_eval["gen_unnormalized"] = RMSEMetrics(
-        loss=float(eval_loss),
-        rmse_transition=primary_metrics.rmse_transition,
-        rmse_state=primary_metrics.rmse_state,
-        rmse_action=primary_metrics.rmse_action,
-        rmse_per_step_transition=primary_metrics.rmse_per_step_transition,
-        rmse_per_step_state=primary_metrics.rmse_per_step_state,
-        rmse_per_step_action=primary_metrics.rmse_per_step_action,
-        mean_transition=primary_metrics.mean_transition,
-        mean_state=primary_metrics.mean_state,
-        mean_action=primary_metrics.mean_action,
-        mean_transition_gt=primary_metrics.mean_transition_gt,
-        mean_state_gt=primary_metrics.mean_state_gt,
-        mean_action_gt=primary_metrics.mean_action_gt,
-        num_samples=primary_metrics.num_samples,
-        horizon=primary_metrics.horizon,
-        state_dim=primary_metrics.state_dim,
-        action_dim=primary_metrics.action_dim,
-        trajectory_lengths=primary_metrics.trajectory_lengths,
-        local_stats=primary_metrics.local_stats,
-    )
+    if primary_metric_key not in unguided_chunk_eval:
+        available_keys = ", ".join(sorted(unguided_chunk_eval))
+        raise ValueError(
+            f"Unknown primary_metric_key={primary_metric_key!r}. "
+            f"Available keys: {available_keys}."
+        )
+    unguided_chunk_eval[primary_metric_key].loss = float(eval_loss)
     report = RMSEMetricsReport(
         unguided=unguided_chunk_eval,
         guided=None,
-        metadata={"evaluation_type": "chunk"},
+        metadata={
+            "evaluation_type": "chunk",
+            "primary_metric_key": primary_metric_key,
+        },
     )
     diffuser.diffusion.train()
     
@@ -703,14 +667,10 @@ def trajectory_state_error(
 
     sq_err = (real_states - generated_states) ** 2 * mask[..., None]
     n_valid = max(int(mask.sum()), 1)
-    n_valid_per_step = np.maximum(mask.sum(axis=0), 1)
-
     state_mse = float(sq_err.sum() / (n_valid * state_dim))
-    state_mse_per_step = sq_err.mean(axis=2).sum(axis=0) / n_valid_per_step
 
     return RMSEMetrics(
         rmse_state=float(np.sqrt(state_mse)),
-        rmse_per_step_state=np.sqrt(state_mse_per_step).astype(NP_FLOAT),
         mean_state=float(real_states[mask].mean()) if int(mask.sum()) > 0 else 0.0,
         num_samples=batch_size,
         horizon=max_length,

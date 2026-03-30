@@ -74,11 +74,11 @@ class SopeDiffusionConfig:
     frame_stack: int = 2
     state_dim: int = 19
     action_dim: int = 7
-    diffusion_steps: int = 256
+    diffusion_steps: int = 512
 
     # TemporalUnet backbone
     dim_mults: Tuple[int, ...] = (1, 2)
-    attention: bool = False
+    attention: bool = True
 
     # diffusion loss
     loss_type: str = "l2"
@@ -93,6 +93,7 @@ class SopeDiffusionConfig:
     # guidance (optional)
     guided: bool = False
     guidance_hyperparams: Optional[Dict[str, Any]] = None
+    diffuser_eef_pos_only: bool = False
     
     @property
     def total_chunk_horizon(self) -> int:
@@ -157,7 +158,34 @@ class SopeDiffuser:
 
         self.diffusion.policy = policy
         self.diffusion.behavior_policy = behavior_policy
-        # self._disable_prefix_loss()
+        self._configure_diffusion_loss_targets()
+
+    def _resolve_eef_pos_slice(self) -> slice:
+        """Return the low-dim robomimic slice for robot0_eef_pos.
+
+        The saved low-dim state follows the sorted key order used by
+        PolicyFeatureHook / LowDimConcatEncoder:
+        object (10), robot0_eef_pos (3), robot0_eef_quat (4),
+        robot0_gripper_qpos (2), so the per-timestep eef position slice is
+        [10:13].
+        """
+        start = 10
+        stop = 13
+        if self.state_dim < stop:
+            raise ValueError(
+                f"robot0_eef_pos slice [10:13] requires state_dim >= 13, got {self.state_dim}."
+            )
+        return slice(start, stop)
+
+    def _configure_diffusion_loss_targets(self) -> None:
+        if not self.cfg.diffuser_eef_pos_only:
+            return
+
+        weights = self.diffusion.loss_fn.weights
+        base_weights = weights.clone()
+        weights.zero_()
+        eef_slice = self._resolve_eef_pos_slice()
+        weights[self.cfg.frame_stack :, eef_slice] = base_weights[self.cfg.frame_stack :, eef_slice]
 
     def _disable_prefix_loss(self) -> None:
         """Treat historical prefix steps as conditioning only, not supervised targets."""

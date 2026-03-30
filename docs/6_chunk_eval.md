@@ -7,6 +7,30 @@ Relevant code:
 
 This note records the current SOPE evaluation path for diffusion checkpoints.
 
+### 2026-03-29 Refactor: Mutable `RMSEMetrics` Chunk Accumulators
+
+The chunk evaluator in [src/eval.py](../src/eval.py) now uses mutable
+`RMSEMetrics` instances directly as the running accumulator for chunk metrics.
+
+Behavior is intended to be unchanged:
+
+- the batch loop still aggregates the same squared-error and scale totals
+- final reported RMSE and mean diagnostics are computed with the same
+  denominators as before
+
+This removes the intermediate dict accumulator and the long
+`_compute_chunk_metrics(...)` unpacking path, so chunk metric wiring now stays
+inside one container type from accumulation through reporting.
+
+### 2026-03-29 Simplification: Remove Per-Step RMSE Outputs
+
+The evaluator no longer reports per-step RMSE arrays for transition, state, or
+action metrics.
+
+The active aggregate metrics use the average over batch elements, chunk
+horizon, and feature dimension, which matches the chunk-level RMSE values used
+by training-time evaluation and standalone checkpoint evaluation.
+
 ### 2026-03-29 Refactor: Shared Training Eval Helper
 
 The train loop now calls `evaluate_sope(...)` from
@@ -23,6 +47,11 @@ Behavior is intended to be unchanged:
 This reduces duplication between training-time eval and standalone evaluation
 entrypoints, so future metric additions only need to be wired in one place.
 
+`evaluate_sope(...)` now also accepts `primary_metric_key` to choose which
+unguided chunk metric entry receives the scalar held-out diffusion loss in the
+returned report. The default remains `gen_unnormalized`, which matches the
+current training-time summary path.
+
 ## What Changed
 
 The evaluator now supports chunk-level reconstruction metrics instead of only
@@ -32,8 +61,7 @@ full-trajectory stitching.
   saved `frame_stack` states from the dataset.
 - Metrics are computed against the held-out ground-truth chunk on the
   non-conditioned future window only.
-- Reported errors include transition, state, and action RMSE, plus
-  per-step RMSE arrays over the chunk horizon.
+- Reported errors include transition, state, and action RMSE.
 - The evaluator now also reports normalized-space chunk RMSE, a persistence
   baseline on the same target, and simple dataset scale summaries for the
   relevant state-action tensors.

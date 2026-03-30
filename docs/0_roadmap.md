@@ -1,6 +1,20 @@
-# TODOs
+# Meeting Logs
 
-## 2026-03-26, W13
+
+## 2026-03-30
+
+- Issue: diffusing state-space traj has good loss but poor trajectory rmse error: [train_sope | wkt_sope – Weights & Biases](https://wandb.ai/k5wang-main-university-of-southern-california/wkt_sope/runs/un5gr8en?nw=nwuserk5wangmain)
+  - Training with `--diffuser-eef-pos-only=True`: https://wandb.ai/k5wang-main-university-of-southern-california/wkt_sope/runs/2a5gukj9; rmse on eef position only is also very high; this might suggest problems with the conditioning scheme
+
+Suggestions from Stephen:
+- Rule my code bugs. Try to reproduce the un-conditional rollout using a sope-native rollout policy/trajectory.
+- Conditionining on quaternion might be bad, consider [arxiv.org/pdf/1812.07035](https://arxiv.org/pdf/1812.07035)
+- SOPE uses in-painting style conditioning, not
+[FiLM conditioning](https://arxiv.org/pdf/1709.07871)
+  - What's the SOTA for conditioning in diffusion models?
+  - Might wanna use different conditioning schemes for our robomimic state adaptation.
+
+## 2026-03-26
 
 1\. Q: How is [`rei/src/latent_sope/robomimic_interface/guidance.py`](../../rei/src/latent_sope/robomimic_interface/guidance.py) used?
 - Implement my version of the guidance and check if it works.

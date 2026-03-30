@@ -31,6 +31,10 @@ The script accepts either a single rollout file or a directory of rollout files.
 The training CLI also exposes `--num-workers`, which is forwarded into the
 PyTorch `DataLoader` construction for both the train and held-out eval loaders.
 
+The CLI now also exposes `--dim-mults` and forwards it directly into
+`SopeDiffusionConfig.dim_mults`, so Temporal U-Net width/depth can be changed
+from the training entrypoint without editing code.
+
 ## Dataset And Chunking
 
 The training path uses [`src/robomimic_interface/dataset.py`](../src/robomimic_interface/dataset.py) to build chunk datasets from saved rollout latents.

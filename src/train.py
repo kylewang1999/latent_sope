@@ -252,6 +252,10 @@ def train_sope(
         raise ValueError(
             "source='obs' requires an encoder; train_sope currently supports source='latents' only."
         )
+    if cfg_diffusion.diffuser_eef_pos_only and cfg_diffusion.state_dim < 13:
+        raise ValueError(
+            "diffuser_eef_pos_only requires a robomimic low-dim state with robot0_eef_pos at slice [10:13]."
+        )
 
     cross_validate_configs(cfg_dataset, cfg_diffusion)
 
