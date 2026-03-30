@@ -17,8 +17,6 @@ if str(_SOPE_ROOT) not in sys.path:
 
 from third_party.sope.opelab.core.baselines.diffusion.temporal import TemporalUnet  # type: ignore
 from third_party.sope.opelab.core.baselines.diffusion.diffusion import GaussianDiffusion  # type: ignore
-from third_party.sope.opelab.core.baselines import diffuser
-
 from src.robomimic_interface.dataset import (
     RolloutChunkDataset,
     RolloutChunkDatasetConfig,
@@ -133,6 +131,7 @@ class SopeDiffuser:
         self.action_dim = int(cfg.action_dim)
         self.transition_dim = self.state_dim + self.action_dim
 
+        self.normalization_stats = normalization_stats
         self.normalizer, self.unnormalizer = make_normalizers(normalization_stats)
 
         self.model = TemporalUnet(
@@ -158,6 +157,26 @@ class SopeDiffuser:
 
         self.diffusion.policy = policy
         self.diffusion.behavior_policy = behavior_policy
+        # self._disable_prefix_loss()
+
+    def _disable_prefix_loss(self) -> None:
+        """Treat historical prefix steps as conditioning only, not supervised targets."""
+        if self.cfg.frame_stack <= 0:
+            return
+        weights = self.diffusion.loss_fn.weights
+        weights[: self.cfg.frame_stack, :] = 0.0
+
+    def _build_training_target(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Build a state-conditioned SOPE target sequence.
+
+        Prefix steps carry only observed states. Their action channels are
+        filled with zeros and excluded from the training loss so the model is
+        trained to generate only the future chunk under state conditioning.
+        """
+        prefix = torch.cat([batch["states_from"], torch.zeros_like(batch["actions_from"])], dim=-1)
+        # prefix = torch.cat([batch["states_from"],batch["actions_from"]], dim=-1)
+        future = torch.cat([batch["states_to"][:, :-1, :], batch["actions_to"]], dim=-1)
+        return torch.cat([prefix, future], dim=1)
 
     def make_optimizer(self):
         return torch.optim.Adam(
@@ -189,11 +208,15 @@ class SopeDiffuser:
         - cond: dictionary containing
             - 0: (B, state_dim * frame_stack)
         """
-        cat_states_from = torch.cat([ batch["states_from"], batch["actions_from"]], dim=-1)
-        cat_states_to = torch.cat([batch["states_to"][:,:-1,:],  batch["actions_to"]], dim=-1)
-        x = torch.cat([cat_states_from, cat_states_to], dim=1) # cat along time axis
+        x = self._build_training_target(batch)
         cond = self.make_cond(batch)
-        return self.diffusion.loss(x, cond)
+        loss, info = self.diffusion.loss(x, cond)
+        if isinstance(info, dict) and "a0_loss" in info:
+            a0_loss = info["a0_loss"]
+            if torch.is_tensor(a0_loss) and not torch.isfinite(a0_loss):
+                info = dict(info)
+                info["a0_loss"] = torch.tensor(float("nan"), device=a0_loss.device)
+        return loss, info
 
     def sample(self, num_samples: int, cond=None, return_chain: bool = False, **kwargs):
         """Sample chunks from the diffusion model."""

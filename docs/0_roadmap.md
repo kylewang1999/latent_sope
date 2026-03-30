@@ -6,6 +6,25 @@
 - Implement my version of the guidance and check if it works.
 2\. Verify SOPE diffusion is good on [`rmimic-lift-ph-lowdim_diffusion_260130`](../../data/policy/rmimic-lift-ph-lowdim_diffusion_260130/rollout.mp4).
 3. Is normalization stats computed/used properly?
+ - 2026-03-28 update: fixed a dataset normalization bug where `actions_from`
+   remained in raw units while `states_from`, `states_to`, and `actions_to`
+   were normalized. The bug affected the historical prefix concatenated into
+   the diffusion training target in
+   [src/sope_diffuser.py](../src/sope_diffuser.py).
+ - 2026-03-28 follow-up: the evaluator now reports raw-space chunk MSE,
+   normalized-space chunk MSE, a persistence baseline, and dataset scale
+   summaries from [src/eval.py](../src/eval.py) and
+   [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py).
+ - 2026-03-28 update: [src/sope_diffuser.py](../src/sope_diffuser.py) now
+   treats the historical prefix as state-conditioning only, matching the
+   original SOPE conditioning scheme more closely. Prefix action channels are
+   removed from the supervised target and prefix-step loss weights are zeroed.
+ - See [docs/10_sope_diffusion_contract.md](./10_sope_diffusion_contract.md)
+   for the merged note covering chunk-field mapping, DDPM `q` vs `p_\theta`,
+   and how `apply_conditioning(...)` acts around the denoiser and reverse
+   process.
+ - Follow-up: re-run chunk-MSE evaluation after this fix and compare the model
+   against both normalized-space reconstruction and the persistence baseline.
 
 
 ## 2026-03-11, W9
@@ -73,4 +92,3 @@
     - Define a wrapper API for robomimic diffusion policies: `sample_tensor`, `grad_log_prob`, and explicit observation preprocessing from raw env observations.
     - Decide whether to standardize on raw observations or shared encoders before mixing $\beta$ and $\pi$ from different visual backbones.
     - Stress-test the current reward regressor on a truly sparse dataset before changing its architecture.
-

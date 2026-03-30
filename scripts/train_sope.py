@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import h5py
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.utils import PATHS, make_log_dir
+
+
+def _resolve_default_checkpoint_dir() -> Path:
+    return Path(make_log_dir("train_sope", verbose=False))
+
+
+def _resolve_default_data_path() -> Path:
+    return (PATHS.repo_root / "data" / "rollout" / "rmimic-lift-ph-lowdim_diffusion_260130").resolve()
+
+
+def _resolve_rollout_reference(path: Path) -> Path:
+    path = path.resolve()
+    if path.is_file():
+        return path
+    if path.is_dir():
+        candidates = sorted(path.glob("*.h5")) + sorted(path.glob("*.hdf5")) + sorted(path.glob("*.npz"))
+        if not candidates:
+            raise FileNotFoundError(f"No rollout files found under {path}.")
+        return candidates[0]
+    raise FileNotFoundError(f"Rollout path not found: {path}")
+
+
+def _infer_rollout_shapes(path: Path) -> tuple[int, int, int]:
+    rollout_path = _resolve_rollout_reference(path)
+    with h5py.File(rollout_path, "r") as handle:
+        latents_shape = tuple(handle["latents"].shape)
+        actions_shape = tuple(handle["actions"].shape)
+        frame_stack = int(handle.attrs.get("frame_stack", latents_shape[1] if len(latents_shape) >= 3 else 1))
+
+    latent_dim = int(latents_shape[-1])
+    action_dim = int(actions_shape[-1])
+    return latent_dim, action_dim, frame_stack
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train the SOPE chunk diffusion model from saved rollout latents.")
+    parser.add_argument("--data", type=Path, default=_resolve_default_data_path())
+    parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--disable-lr-scheduler", action="store_true")
+    parser.add_argument("--lr-scheduler-type", type=str, default="cosine", choices=("cosine",))
+    parser.add_argument("--lr-scheduler-min-lr", type=float, default=0.0)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--chunk-size", type=int, default=4)
+    parser.add_argument("--stride", type=int, default=1)
+    parser.add_argument("--train-fraction", type=float, default=0.8)
+    parser.add_argument("--num-saves", type=int, default=10)
+    parser.add_argument("--num-evals", type=int, default=100)
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--normalize", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--wandb-project", type=str, default="wkt_sope")
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-run-name", type=str, default="train_sope")
+    parser.add_argument("--wandb-group", type=str, default="sope_diffusion")
+    parser.add_argument("--wandb-mode", type=str, default="online", choices=("online", "offline", "disabled"))
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    from src.robomimic_interface.dataset import RolloutChunkDatasetConfig
+    from src.sope_diffuser import SopeDiffusionConfig
+    from src.train import TrainingConfig, train_sope
+
+    data_path = args.data.resolve()
+    checkpoint_dir = args.checkpoint_dir.resolve() if args.checkpoint_dir is not None else _resolve_default_checkpoint_dir()
+
+    latent_dim, action_dim, frame_stack = _infer_rollout_shapes(data_path)
+
+    cfg_dataset = RolloutChunkDatasetConfig(
+        chunk_size=args.chunk_size,
+        stride=args.stride,
+        frame_stack=frame_stack,
+        source="latents",
+        latents_dim=latent_dim,
+        action_dim=action_dim,
+        normalize=bool(args.normalize),
+        return_metadata=True,
+    )
+    cfg_diffusion = SopeDiffusionConfig(
+        chunk_horizon=args.chunk_size,
+        frame_stack=frame_stack,
+        state_dim=latent_dim,
+        action_dim=action_dim,
+    )
+    cfg_training = TrainingConfig(
+        data=[data_path],
+        checkpoint_dir=checkpoint_dir,
+        train_fraction=args.train_fraction,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        lr=args.lr,
+        lr_scheduler_enabled=not args.disable_lr_scheduler,
+        lr_scheduler_type=args.lr_scheduler_type,
+        lr_scheduler_min_lr=args.lr_scheduler_min_lr,
+        weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
+        max_steps=args.max_steps,
+        num_saves=args.num_saves,
+        num_evals=args.num_evals,
+        seed=args.seed,
+        device=args.device,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_run_name=args.wandb_run_name,
+        wandb_group=args.wandb_group,
+        wandb_mode=args.wandb_mode,
+        wandb_tags=("train_sope", data_path.stem),
+    )
+
+    train_sope(
+        cfg_dataset=cfg_dataset,
+        cfg_diffusion=cfg_diffusion,
+        cfg_training=cfg_training,
+    )
+
+
+if __name__ == "__main__":
+    main()

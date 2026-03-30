@@ -28,6 +28,9 @@ By default, [`scripts/train_sope.py`](../scripts/train_sope.py) trains from roll
 
 The script accepts either a single rollout file or a directory of rollout files. When given a directory, it infers latent and action shapes from the first rollout file it finds.
 
+The training CLI also exposes `--num-workers`, which is forwarded into the
+PyTorch `DataLoader` construction for both the train and held-out eval loaders.
+
 ## Dataset And Chunking
 
 The training path uses [`src/robomimic_interface/dataset.py`](../src/robomimic_interface/dataset.py) to build chunk datasets from saved rollout latents.
@@ -42,11 +45,12 @@ The intended chunk layout is:
 
 ## Train Eval Split
 
-When the input resolves to many rollout trajectory files, training now uses a trajectory-level 80 / 20 train / eval split.
+When the input resolves to many rollout trajectory files, training now uses a trajectory-level train / eval split controlled by `train_fraction`, which defaults to `0.8`.
 
 Design choices:
 - The split happens at the rollout-file level, not the chunk level, to avoid leakage between train and eval chunks from the same trajectory.
 - The file list is shuffled using the training seed, so the split is deterministic for a fixed seed.
+- `train_fraction` is stored in the saved checkpoint metadata so later evaluation can reconstruct the same held-out split.
 - Eval uses the held-out trajectory files only.
 - When dataset normalization is enabled, the eval dataset reuses the train normalization statistics.
 
@@ -75,9 +79,16 @@ This uses floored division so evaluation runs no more often than the requested c
 The training loop uses a single epoch-level `tqdm` progress bar and logs:
 - batch metrics such as `train/loss`
 - epoch summaries such as `epoch/loss`
-- held-out evaluation metrics such as `eval/loss`
+- held-out evaluation metrics under `eval_metrics:unguided/...`, currently including `loss`, `transition_rmse`, `state_rmse`, and `action_rmse`
+- held-out diagnostics under `eval_diagnostics:unguided/...`, currently including the mean unnormalized ground-truth chunk value across batch, timestep, and transition dimensions
+- placeholder guided namespaces `eval_metrics:guided/...` and `eval_diagnostics:guided/...` reserved for future guided evaluation wiring
 
 When `wandb` is enabled, the train / eval split, save cadence, and eval cadence are included in the logged config metadata.
+
+Training-time held-out evaluation is now orchestrated directly inside
+`evaluate_sope(...)` in [`src/eval.py`](../src/eval.py): it computes eval loss,
+updates the epoch progress bar postfix, and logs summary scalars without routing the metric payload back through
+[`src/train.py`](../src/train.py).
 
 ## Evaluation Path
 

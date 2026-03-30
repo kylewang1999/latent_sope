@@ -22,6 +22,61 @@ class NormalizationStats:
     std: np.ndarray  # shape (D,)
 
 
+def _summary_stats(x: np.ndarray) -> Dict[str, float]:
+    x = np.asarray(x, dtype=np.float32)
+    return {
+        "mean": float(x.mean()),
+        "std": float(x.std()),
+        "min": float(x.min()),
+        "max": float(x.max()),
+    }
+
+
+def _collect_dataset_array(dataset: Any, attr: str) -> np.ndarray:
+    if isinstance(dataset, ConcatDataset):
+        return np.concatenate(
+            [_collect_dataset_array(subdataset, attr) for subdataset in dataset.datasets],
+            axis=0,
+        ).astype(np.float32)
+    if not hasattr(dataset, attr):
+        raise AttributeError(f"Dataset {type(dataset)} has no attribute {attr!r}.")
+    return np.asarray(getattr(dataset, attr), dtype=np.float32)
+
+
+def summarize_dataset_feature_stats(dataset: Any) -> Dict[str, Dict[str, float]]:
+    """Summarize raw and normalized feature scales for debugging."""
+    states_from = _collect_dataset_array(dataset, "states_from")
+    states_to = _collect_dataset_array(dataset, "states_to")
+    actions_from = _collect_dataset_array(dataset, "actions_from")
+    actions_to = _collect_dataset_array(dataset, "actions_to")
+    stats = getattr(dataset, "stats", None)
+    if isinstance(dataset, ConcatDataset) and stats is None and dataset.datasets:
+        stats = getattr(dataset.datasets[0], "stats", None)
+
+    summary = {
+        "states_from_raw": _summary_stats(states_from),
+        "states_to_raw": _summary_stats(states_to),
+        "actions_from_raw": _summary_stats(actions_from),
+        "actions_to_raw": _summary_stats(actions_to),
+    }
+    if stats is None:
+        return summary
+
+    latents_mean = stats.mean[: states_from.shape[-1]]
+    latents_std = stats.std[: states_from.shape[-1]]
+    act_mean = stats.mean[states_from.shape[-1] :]
+    act_std = stats.std[states_from.shape[-1] :]
+    summary.update(
+        {
+            "states_from_normalized": _summary_stats((states_from - latents_mean) / latents_std),
+            "states_to_normalized": _summary_stats((states_to - latents_mean) / latents_std),
+            "actions_from_normalized": _summary_stats((actions_from - act_mean) / act_std),
+            "actions_to_normalized": _summary_stats((actions_to - act_mean) / act_std),
+        }
+    )
+    return summary
+
+
 def compute_normalization_stats(x: np.ndarray) -> NormalizationStats:
     """Compute (mean, std) over (N, W, D) arrays along the (N, W) axes."""
     assert x.ndim == 3, f"Expected (N, W, D), got {x.shape}"
@@ -182,6 +237,7 @@ class RolloutChunkDataset:
             act_std = self.stats.std[self.latents_dim :]
             states_from = (states_from - latents_mean) / latents_std
             states_to = (states_to - latents_mean) / latents_std
+            actions_from = (actions_from - act_mean) / act_std
             actions_to = (actions_to - act_mean) / act_std
         states_from_t = torch.from_numpy(np.asarray(states_from, dtype=np.float32))
         actions_from_t = torch.from_numpy(np.asarray(actions_from, dtype=np.float32))
@@ -226,6 +282,7 @@ def make_rollout_chunk_dataloader(
     paths: Sequence[Path],
     config: RolloutChunkDatasetConfig,
     batch_size: int = 4,
+    num_workers: int = 0,
     shuffle: bool = True,
     drop_last: bool = True,
     *,
@@ -251,7 +308,7 @@ def make_rollout_chunk_dataloader(
     rollout_paths = _resolve_rollout_paths(paths)
     pre_traj_config = replace(
         config, normalize=False
-    )  # disable chunk-leve normalization
+    )  # disable traj-leve normalization
 
     datasets: List[RolloutChunkDataset] = []
     transitions_list: List[np.ndarray] = []
@@ -303,8 +360,10 @@ def make_rollout_chunk_dataloader(
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
+        num_workers=num_workers,
         shuffle=shuffle,
         drop_last=drop_last,
+        persistent_workers=bool(num_workers > 0),
         collate_fn=_collate_fn,
     )
 

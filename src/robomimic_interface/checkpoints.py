@@ -33,10 +33,20 @@ import numpy as np
 import torch
 
 
-sys.path.append(Path(__file__).parent.parent.parent.parent / "third_party")
-import third_party.robomimic.robomimic.utils.file_utils as FileUtils
+_THIRD_PARTY_ROOT = Path(__file__).resolve().parents[2] / "third_party"
+_ROBOMIMIC_ROOT = _THIRD_PARTY_ROOT / "robomimic"
+for _path in (str(_THIRD_PARTY_ROOT), str(_ROBOMIMIC_ROOT)):
+    if _path not in sys.path:
+        sys.path.append(_path)
+try:
+    import third_party.robomimic.robomimic.utils.file_utils as FileUtils
+    _FILEUTILS_IMPORT_ERROR: Optional[Exception] = None
+except ModuleNotFoundError as exc:
+    FileUtils = None
+    _FILEUTILS_IMPORT_ERROR = exc
 import third_party.robomimic.robomimic.utils.obs_utils as ObsUtils
 from third_party.robomimic.robomimic.algo import algo_factory, RolloutPolicy, PolicyAlgo
+from third_party.robomimic.robomimic.config.base_config import config_factory
 from third_party.robomimic.robomimic.envs.env_base import EnvBase
 from src.utils import CONSOLE_LOGGER, timeit
 
@@ -184,7 +194,7 @@ def _load_ckpt_dict_torch(ckpt_path: Path, map_location: str = "cpu") -> Dict[st
 def _load_ckpt_dict_robomimic(ckpt_path: Path) -> Optional[Dict[str, Any]]:
     """Load checkpoint using robomimic's helper if available."""
 
-    if hasattr(FileUtils, "maybe_dict_from_checkpoint"):
+    if FileUtils is not None and hasattr(FileUtils, "maybe_dict_from_checkpoint"):
         return FileUtils.maybe_dict_from_checkpoint(ckpt_path=str(ckpt_path))
 
     return None
@@ -294,15 +304,21 @@ def build_algo_from_checkpoint(
     if algo_name is None:
         raise KeyError("Checkpoint missing 'algo_name' key")
 
-    if not hasattr(FileUtils, "config_from_checkpoint"):
-        raise AttributeError(
-            "robomimic.utils.file_utils.config_from_checkpoint not found. "
-            "Your robomimic version may be too old."
+    if FileUtils is not None and hasattr(FileUtils, "config_from_checkpoint"):
+        config, _ = FileUtils.config_from_checkpoint(
+            algo_name=algo_name, ckpt_dict=ckpt_dict
         )
-
-    config, _ = FileUtils.config_from_checkpoint(
-        algo_name=algo_name, ckpt_dict=ckpt_dict
-    )
+    else:
+        raw_config = ckpt_dict.get("config", None)
+        if raw_config is None:
+            if _FILEUTILS_IMPORT_ERROR is not None:
+                raise RuntimeError(
+                    "robomimic file_utils could not be imported and the checkpoint "
+                    "does not contain an inline config payload."
+                ) from _FILEUTILS_IMPORT_ERROR
+            raise KeyError("Checkpoint missing 'config' key")
+        config_dict = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
+        config = config_factory(algo_name, dic=config_dict)
     ObsUtils.initialize_obs_utils_with_config(config)
 
     shape_md = ckpt_dict.get("shape_metadata", None)
@@ -343,7 +359,7 @@ def build_rollout_policy_from_checkpoint(
     wrap it with RolloutPolicy.
     """
 
-    if hasattr(FileUtils, "policy_from_checkpoint"):
+    if FileUtils is not None and hasattr(FileUtils, "policy_from_checkpoint"):
         out = FileUtils.policy_from_checkpoint(
             ckpt_path=str(ckpt.ckpt_path),
             device=device,
@@ -378,6 +394,11 @@ def build_env_from_checkpoint(
     env_name: Optional[str] = None,
 ) -> EnvBase:
     """Reconstruct a robomimic environment from a checkpoint."""
+    if FileUtils is None:
+        raise RuntimeError(
+            "robomimic.utils.file_utils is unavailable in this environment, so "
+            "environment reconstruction from checkpoints is not supported."
+        ) from _FILEUTILS_IMPORT_ERROR
     env, _ = FileUtils.env_from_checkpoint(
         ckpt_dict=ckpt.ckpt_dict,
         env_name=env_name,

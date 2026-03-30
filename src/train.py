@@ -33,8 +33,10 @@ PathLike = Union[str, Path]
 class TrainingConfig:
     data: Sequence[PathLike]
     checkpoint_dir: Optional[PathLike] = None
+    train_fraction: float = 0.8
     epochs: int = 10
     batch_size: int = 64
+    num_workers: int = 0
     lr: float = 3e-4
     lr_scheduler_enabled: bool = True
     lr_scheduler_type: str = "cosine"
@@ -80,6 +82,17 @@ def _convert_stats(
     return SopeNormalizationStats(mean=stats.mean, std=stats.std)
 
 
+def _serialize_training_config(cfg_training: TrainingConfig) -> dict[str, Any]:
+    payload = asdict(cfg_training)
+    payload["data"] = [str(path) for path in _as_paths(cfg_training.data)]
+    payload["checkpoint_dir"] = (
+        str(Path(cfg_training.checkpoint_dir))
+        if cfg_training.checkpoint_dir is not None
+        else None
+    )
+    return payload
+
+
 def _save_checkpoint(
     path: Path,
     diffuser: SopeDiffuser,
@@ -87,6 +100,7 @@ def _save_checkpoint(
     step: int,
     cfg_diffusion: SopeDiffusionConfig,
     cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_training: TrainingConfig,
     stats: Optional[DatasetNormalizationStats],
 ) -> None:
     payload = {
@@ -95,6 +109,7 @@ def _save_checkpoint(
         "step": int(step),
         "diffusion_config": asdict(cfg_diffusion),
         "dataset_config": asdict(cfg_dataset),
+        "training_config": _serialize_training_config(cfg_training),
         "normalization_stats": (
             None if stats is None else {"mean": stats.mean, "std": stats.std}
         ),
@@ -106,10 +121,12 @@ def _save_configs(
     path: Path,
     cfg_diffusion: SopeDiffusionConfig,
     cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_training: TrainingConfig,
 ) -> None:
     payload = {
         "diffusion_config": asdict(cfg_diffusion),
         "dataset_config": asdict(cfg_dataset),
+        "training_config": _serialize_training_config(cfg_training),
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
@@ -184,6 +201,10 @@ def _split_rollout_paths(
     seed: int,
     train_fraction: float = 0.8,
 ) -> tuple[list[Path], list[Path]]:
+    if not (0.0 < train_fraction < 1.0):
+        raise ValueError(
+            f"train_fraction must be strictly between 0 and 1, got {train_fraction}."
+        )
     rollout_paths = _resolve_rollout_paths(paths)
     if len(rollout_paths) < 2:
         return rollout_paths, []
@@ -210,30 +231,12 @@ def _assign_dataset_stats(dataset: Any, stats: Optional[DatasetNormalizationStat
         dataset.normalize = stats is not None
 
 
-def _evaluate_sope(
-    diffuser: SopeDiffuser,
-    loader: torch.utils.data.DataLoader,
-    device: torch.device,
-) -> float:
-    diffuser.diffusion.eval()
-    loss_sum = 0.0
-    batches = 0
-    with torch.no_grad():
-        for batch in loader:
-            batch_t = _to_device(batch, device)
-            loss_out = diffuser.loss(batch_t)
-            loss = loss_out[0] if isinstance(loss_out, tuple) else loss_out
-            loss_sum += float(loss.item())
-            batches += 1
-    diffuser.diffusion.train()
-    return loss_sum / max(batches, 1)
-
-
 def train_sope(
     cfg_dataset: RolloutChunkDatasetConfig,
     cfg_diffusion: SopeDiffusionConfig,
     cfg_training: TrainingConfig,
 ) -> None:
+    from src.eval import evaluate_sope
     from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
     from src.sope_diffuser import SopeDiffuser, cross_validate_configs
     import wandb
@@ -255,13 +258,14 @@ def train_sope(
     train_paths, eval_paths = _split_rollout_paths(
         paths=cfg_training.data,
         seed=cfg_training.seed,
-        train_fraction=0.8,
+        train_fraction=cfg_training.train_fraction,
     )
 
     loader, stats = make_rollout_chunk_dataloader(
         paths=train_paths,
         config=cfg_dataset,
         batch_size=cfg_training.batch_size,
+        num_workers=cfg_training.num_workers,
         shuffle=True,
         drop_last=True,
         encoder=None,
@@ -274,6 +278,7 @@ def train_sope(
             paths=eval_paths,
             config=cfg_dataset,
             batch_size=cfg_training.batch_size,
+            num_workers=cfg_training.num_workers,
             shuffle=False,
             drop_last=False,
             encoder=None,
@@ -316,7 +321,7 @@ def train_sope(
     )
     if checkpoint_dir is not None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        _save_configs(checkpoint_dir / "configs.json", cfg_diffusion, cfg_dataset)
+        _save_configs(checkpoint_dir / "configs.json", cfg_diffusion, cfg_dataset, cfg_training)
 
     run = None
     if cfg_training.wandb_project:
@@ -353,6 +358,7 @@ def train_sope(
             epoch_loss_sum = 0.0
             epoch_batches = 0
 
+            # Train
             for batch in loader:
                 step += 1
                 batch_t = _to_device(batch, device)
@@ -394,51 +400,54 @@ def train_sope(
             avg_epoch_loss = epoch_loss_sum / max(epoch_batches, 1)
             current_lr = float(optimizer.param_groups[0]["lr"])
             epoch_iterator.set_postfix(
-                loss=f"{avg_epoch_loss:.4f}", lr=f"{current_lr:.2e}"
+                loss=f"{avg_epoch_loss:.2e}", lr=f"{current_lr:.2e}"
             )
 
             if run is not None:
                 run.log({"train_epoch_avg/loss": avg_epoch_loss}, step=step)
-
-            if eval_loader is not None and eval_every is not None:
-                if epoch % eval_every == 0 or epoch == cfg_training.epochs:
-                    eval_loss = _evaluate_sope(diffuser, eval_loader, device)
-                    epoch_iterator.set_postfix(
-                        loss=f"{avg_epoch_loss:.4f}",
-                        eval=f"{eval_loss:.4f}",
-                        lr=f"{current_lr:.2e}",
-                    )
-                    if run is not None:
-                        run.log(
-                            {
-                                "eval/loss": eval_loss,
-                                "eval/epoch": float(epoch),
-                            },
-                            step=step,
-                        )
-
-            if checkpoint_dir is not None:
-                if epoch % save_every == 0 or epoch == cfg_training.epochs:
-                    ckpt_path = checkpoint_dir / f"sope_diffuser_epoch_{epoch:04d}.pt"
-                    _save_checkpoint(
-                        ckpt_path,
-                        diffuser,
-                        epoch,
-                        step,
-                        cfg_diffusion,
-                        cfg_dataset,
-                        stats,
-                    )
-                    latest_path = checkpoint_dir / "sope_diffuser_latest.pt"
-                    _save_checkpoint(
-                        latest_path,
-                        diffuser,
-                        epoch,
-                        step,
-                        cfg_diffusion,
-                        cfg_dataset,
-                        stats,
-                    )
+            
+            # Evaluate on held-out data
+            eval_now = eval_loader is not None and eval_every is not None \
+                and (epoch % eval_every == 0 or epoch == cfg_training.epochs)
+            save_now = checkpoint_dir is not None \
+                and (epoch % save_every == 0 or epoch == cfg_training.epochs)
+            
+            if eval_now:
+                evaluate_sope(
+                    diffuser,
+                    eval_loader,
+                    device,
+                    epoch=epoch,
+                    step=step,
+                    run=run,
+                    epoch_iterator=epoch_iterator,
+                    avg_epoch_loss=avg_epoch_loss,
+                    current_lr=current_lr,
+                )
+            
+            if save_now:
+                ckpt_path = checkpoint_dir / f"sope_diffuser_epoch_{epoch:04d}.pt"
+                _save_checkpoint(
+                    ckpt_path,
+                    diffuser,
+                    epoch,
+                    step,
+                    cfg_diffusion,
+                    cfg_dataset,
+                    cfg_training,
+                    stats,
+                )
+                latest_path = checkpoint_dir / "sope_diffuser_latest.pt"
+                _save_checkpoint(
+                    latest_path,
+                    diffuser,
+                    epoch,
+                    step,
+                    cfg_diffusion,
+                    cfg_dataset,
+                    cfg_training,
+                    stats,
+                )
 
             if max_steps and step >= max_steps:
                 break
