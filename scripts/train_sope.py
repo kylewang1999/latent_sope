@@ -20,7 +20,11 @@ def _resolve_default_checkpoint_dir() -> Path:
 
 
 def _resolve_default_data_path() -> Path:
-    return (PATHS.repo_root / "data" / "rollout" / "rmimic-lift-ph-lowdim_diffusion_260130").resolve()
+    rollout_root = (
+        PATHS.repo_root / "data" / "rollout" / "rmimic-lift-ph-lowdim_diffusion_260130"
+    )
+    h5_dir = rollout_root / "h5_files"
+    return (h5_dir if h5_dir.is_dir() else rollout_root).resolve()
 
 
 def _resolve_rollout_reference(path: Path) -> Path:
@@ -28,7 +32,7 @@ def _resolve_rollout_reference(path: Path) -> Path:
     if path.is_file():
         return path
     if path.is_dir():
-        candidates = sorted(path.glob("*.h5")) + sorted(path.glob("*.hdf5")) + sorted(path.glob("*.npz"))
+        candidates = sorted(path.rglob("*.h5")) + sorted(path.rglob("*.hdf5")) + sorted(path.rglob("*.npz"))
         if not candidates:
             raise FileNotFoundError(f"No rollout files found under {path}.")
         return candidates[0]
@@ -81,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--chunk-size", type=int, default=4)
     parser.add_argument("--dim-mults", type=int, nargs="+", default=(1, 2), help="TemporalUnet channel multipliers, e.g. --dim-mults 1 2 4.")
+    parser.add_argument("--action-weight", type=float, default=5.0)
+    parser.add_argument("--predict-epsilon", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--train-fraction", type=float, default=0.8)
     parser.add_argument("--num-saves", type=int, default=10)
@@ -127,6 +133,8 @@ def main() -> None:
         state_dim=latent_dim,
         action_dim=action_dim,
         dim_mults=tuple(args.dim_mults),
+        action_weight=args.action_weight,
+        predict_epsilon=bool(args.predict_epsilon),
         diffuser_eef_pos_only=bool(args.diffuser_eef_pos_only),
     )
     if args.diffuser_eef_pos_only:

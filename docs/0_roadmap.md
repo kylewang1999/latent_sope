@@ -7,7 +7,9 @@
   - Training with `--diffuser-eef-pos-only=True`: https://wandb.ai/k5wang-main-university-of-southern-california/wkt_sope/runs/2a5gukj9; rmse on eef position only is also very high; this might suggest problems with the conditioning scheme
 
 Suggestions from Stephen:
-- Rule my code bugs. Try to reproduce the un-conditional rollout using a sope-native rollout policy/trajectory.
+- Rule my code bugs. 
+  - Try no conditiong at all + eef position only.
+  - Try to reproduce the un-conditional rollout using a sope-native rollout policy/trajectory.
 - Conditionining on quaternion might be bad, consider [arxiv.org/pdf/1812.07035](https://arxiv.org/pdf/1812.07035)
 - SOPE uses in-painting style conditioning, not
 [FiLM conditioning](https://arxiv.org/pdf/1709.07871)
@@ -33,7 +35,7 @@ Suggestions from Stephen:
    treats the historical prefix as state-conditioning only, matching the
    original SOPE conditioning scheme more closely. Prefix action channels are
    removed from the supervised target and prefix-step loss weights are zeroed.
- - See [docs/10_sope_diffusion_contract.md](./10_sope_diffusion_contract.md)
+ - See [docs/8_sope_diffusion_contract.md](./8_sope_diffusion_contract.md)
    for the merged note covering chunk-field mapping, DDPM `q` vs `p_\theta`,
    and how `apply_conditioning(...)` acts around the denoiser and reverse
    process.

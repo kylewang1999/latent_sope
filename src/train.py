@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import functools
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
@@ -32,6 +33,7 @@ PathLike = Union[str, Path]
 @dataclass(frozen=True)
 class TrainingConfig:
     data: Sequence[PathLike]
+    data_kind: str = "rollout"
     checkpoint_dir: Optional[PathLike] = None
     train_fraction: float = 0.8
     epochs: int = 10
@@ -99,7 +101,7 @@ def _save_checkpoint(
     epoch: int,
     step: int,
     cfg_diffusion: SopeDiffusionConfig,
-    cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_dataset: Any,
     cfg_training: TrainingConfig,
     stats: Optional[DatasetNormalizationStats],
 ) -> None:
@@ -120,7 +122,7 @@ def _save_checkpoint(
 def _save_configs(
     path: Path,
     cfg_diffusion: SopeDiffusionConfig,
-    cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_dataset: Any,
     cfg_training: TrainingConfig,
 ) -> None:
     payload = {
@@ -140,7 +142,7 @@ def _resolve_rollout_paths(paths: Sequence[PathLike]) -> list[Path]:
     for p in _as_paths(paths):
         if p.is_dir():
             for ext in ("*.npz", "*.h5", "*.hdf5"):
-                resolved.extend(sorted(p.glob(ext)))
+                resolved.extend(sorted(p.rglob(ext)))
         else:
             resolved.append(p)
     resolved = [p for p in resolved if p.is_file()]
@@ -182,6 +184,52 @@ def _build_lr_scheduler(
         T_max=max(total_steps, 1),
         eta_min=cfg_training.lr_scheduler_min_lr,
     )
+
+
+def _patch_torch_optimizer_for_missing_sympy() -> None:
+    """Work around torch optimizer construction pulling in torch._dynamo.
+
+    Some local environments ship a torch build whose optimizer base class wraps
+    `add_param_group` with `torch._compile._disable_dynamo`, which lazily
+    imports `torch._dynamo` and therefore `sympy`. The training code does not
+    use Dynamo, so when `sympy` is unavailable we can safely unwrap that method
+    back to the original implementation.
+    """
+    try:
+        import sympy  # noqa: F401
+
+        return
+    except ModuleNotFoundError:
+        pass
+
+    import torch.optim as optim_mod
+    import torch.optim.optimizer as optimizer_mod
+
+    for name in ("add_param_group", "zero_grad", "state_dict", "load_state_dict"):
+        method = getattr(optimizer_mod.Optimizer, name, None)
+        original = getattr(method, "__wrapped__", None)
+        if original is not None:
+            setattr(optimizer_mod.Optimizer, name, original)
+
+    for attr_name in dir(optim_mod):
+        attr = getattr(optim_mod, attr_name)
+        if not isinstance(attr, type):
+            continue
+        if not issubclass(attr, optimizer_mod.Optimizer):
+            continue
+        step = getattr(attr, "step", None)
+        original = getattr(step, "__wrapped__", None)
+        if original is not None:
+            @functools.wraps(original)
+            def _patched_step(self, *args, __original=original, **kwargs):
+                prev_grad = torch.is_grad_enabled()
+                try:
+                    torch.set_grad_enabled(self.defaults.get("differentiable", False))
+                    return __original(self, *args, **kwargs)
+                finally:
+                    torch.set_grad_enabled(prev_grad)
+
+            setattr(attr, "step", _patched_step)
 
 
 def _resolve_save_every(cfg_training: TrainingConfig) -> int:
@@ -231,13 +279,24 @@ def _assign_dataset_stats(dataset: Any, stats: Optional[DatasetNormalizationStat
         dataset.normalize = stats is not None
 
 
-def train_sope(
-    cfg_dataset: RolloutChunkDatasetConfig,
+def _stringify_refs(refs: Optional[Sequence[Any]]) -> list[str]:
+    if refs is None:
+        return []
+    return [str(ref) for ref in refs]
+
+
+def train_sope_with_loaders(
+    *,
+    cfg_dataset: Any,
     cfg_diffusion: SopeDiffusionConfig,
     cfg_training: TrainingConfig,
+    loader: torch.utils.data.DataLoader,
+    eval_loader: Optional[torch.utils.data.DataLoader],
+    stats: Optional[DatasetNormalizationStats],
+    train_data_refs: Optional[Sequence[Any]] = None,
+    eval_data_refs: Optional[Sequence[Any]] = None,
 ) -> None:
     from src.eval import evaluate_sope
-    from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
     from src.sope_diffuser import SopeDiffuser, cross_validate_configs
     import wandb
 
@@ -248,49 +307,34 @@ def train_sope(
     )
     device = torch.device(device_str)
 
-    if cfg_dataset.source == "obs":
+    if getattr(cfg_dataset, "source", None) == "obs":
         raise ValueError(
             "source='obs' requires an encoder; train_sope currently supports source='latents' only."
         )
-    if cfg_diffusion.diffuser_eef_pos_only and cfg_diffusion.state_dim < 13:
-        raise ValueError(
-            "diffuser_eef_pos_only requires a robomimic low-dim state with robot0_eef_pos at slice [10:13]."
+
+    dataset_state_dim = getattr(cfg_dataset, "latents_dim", None)
+    if dataset_state_dim is None:
+        dataset_state_dim = getattr(cfg_dataset, "state_dim", None)
+    if dataset_state_dim is None:
+        raise AttributeError(
+            f"{type(cfg_dataset).__name__} must define latents_dim or state_dim."
         )
+    dataset_state_dim = int(dataset_state_dim)
+    dataset_state_projection = getattr(cfg_dataset, "state_projection", "full")
+    if cfg_diffusion.diffuser_eef_pos_only:
+        if dataset_state_projection == "eef_pos":
+            if dataset_state_dim != 3:
+                raise ValueError(
+                    "state_projection='eef_pos' requires the effective dataset state_dim to be 3."
+                )
+        elif dataset_state_dim < 13:
+            raise ValueError(
+                "diffuser_eef_pos_only requires either state_projection='eef_pos' or a low-dim robomimic state with robot0_eef_pos at slice [10:13]."
+            )
 
     cross_validate_configs(cfg_dataset, cfg_diffusion)
 
-    train_paths, eval_paths = _split_rollout_paths(
-        paths=cfg_training.data,
-        seed=cfg_training.seed,
-        train_fraction=cfg_training.train_fraction,
-    )
-
-    loader, stats = make_rollout_chunk_dataloader(
-        paths=train_paths,
-        config=cfg_dataset,
-        batch_size=cfg_training.batch_size,
-        num_workers=cfg_training.num_workers,
-        shuffle=True,
-        drop_last=True,
-        encoder=None,
-        obs_keys=None,
-        encoder_device=device_str,
-    )
-    eval_loader = None
-    if eval_paths:
-        eval_loader, _ = make_rollout_chunk_dataloader(
-            paths=eval_paths,
-            config=cfg_dataset,
-            batch_size=cfg_training.batch_size,
-            num_workers=cfg_training.num_workers,
-            shuffle=False,
-            drop_last=False,
-            encoder=None,
-            obs_keys=None,
-            encoder_device=device_str,
-        )
-        _assign_dataset_stats(eval_loader.dataset, stats if cfg_dataset.normalize else None)
-
+    _patch_torch_optimizer_for_missing_sympy()
     diffuser = SopeDiffuser(
         cfg=cfg_diffusion,
         normalization_stats=_convert_stats(stats),
@@ -342,8 +386,8 @@ def train_sope(
                 "training": {
                     **asdict(cfg_training),
                     "data": [str(path) for path in _as_paths(cfg_training.data)],
-                    "train_paths": [str(path) for path in train_paths],
-                    "eval_paths": [str(path) for path in eval_paths],
+                    "train_data_refs": _stringify_refs(train_data_refs),
+                    "eval_data_refs": _stringify_refs(eval_data_refs),
                     "checkpoint_dir": (
                         str(checkpoint_dir) if checkpoint_dir is not None else None
                     ),
@@ -362,7 +406,6 @@ def train_sope(
             epoch_loss_sum = 0.0
             epoch_batches = 0
 
-            # Train
             for batch in loader:
                 step += 1
                 batch_t = _to_device(batch, device)
@@ -409,13 +452,14 @@ def train_sope(
 
             if run is not None:
                 run.log({"train_epoch_avg/loss": avg_epoch_loss}, step=step)
-            
-            # Evaluate on held-out data
-            eval_now = eval_loader is not None and eval_every is not None \
-                and (epoch % eval_every == 0 or epoch == cfg_training.epochs)
-            save_now = checkpoint_dir is not None \
-                and (epoch % save_every == 0 or epoch == cfg_training.epochs)
-            
+
+            eval_now = eval_loader is not None and eval_every is not None and (
+                epoch % eval_every == 0 or epoch == cfg_training.epochs
+            )
+            save_now = checkpoint_dir is not None and (
+                epoch % save_every == 0 or epoch == cfg_training.epochs
+            )
+
             if eval_now:
                 evaluate_sope(
                     diffuser,
@@ -428,7 +472,7 @@ def train_sope(
                     avg_epoch_loss=avg_epoch_loss,
                     current_lr=current_lr,
                 )
-            
+
             if save_now:
                 ckpt_path = checkpoint_dir / f"sope_diffuser_epoch_{epoch:04d}.pt"
                 _save_checkpoint(
@@ -460,6 +504,60 @@ def train_sope(
             run.finish()
 
 
+def train_sope(
+    cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_diffusion: SopeDiffusionConfig,
+    cfg_training: TrainingConfig,
+) -> None:
+    from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
+
+    device_str = cfg_training.device or resolve_device(
+        prefer_cuda=cfg_training.prefer_cuda
+    )
+
+    train_paths, eval_paths = _split_rollout_paths(
+        paths=cfg_training.data,
+        seed=cfg_training.seed,
+        train_fraction=cfg_training.train_fraction,
+    )
+
+    loader, stats = make_rollout_chunk_dataloader(
+        paths=train_paths,
+        config=cfg_dataset,
+        batch_size=cfg_training.batch_size,
+        num_workers=cfg_training.num_workers,
+        shuffle=True,
+        drop_last=True,
+        encoder=None,
+        obs_keys=None,
+        encoder_device=device_str,
+    )
+    eval_loader = None
+    if eval_paths:
+        eval_loader, _ = make_rollout_chunk_dataloader(
+            paths=eval_paths,
+            config=cfg_dataset,
+            batch_size=cfg_training.batch_size,
+            num_workers=cfg_training.num_workers,
+            shuffle=False,
+            drop_last=False,
+            encoder=None,
+            obs_keys=None,
+            encoder_device=device_str,
+        )
+        _assign_dataset_stats(eval_loader.dataset, stats if cfg_dataset.normalize else None)
+    train_sope_with_loaders(
+        cfg_dataset=cfg_dataset,
+        cfg_diffusion=cfg_diffusion,
+        cfg_training=cfg_training,
+        loader=loader,
+        eval_loader=eval_loader,
+        stats=stats,
+        train_data_refs=train_paths,
+        eval_data_refs=eval_paths,
+    )
+
+
 def train_reward(*args, **kwargs) -> None:
     """Placeholder for future per-step reward predictor training."""
     raise NotImplementedError("train_reward() is not implemented yet.")
@@ -483,4 +581,5 @@ __all__ = [
     "train",
     "train_reward",
     "train_sope",
+    "train_sope_with_loaders",
 ]

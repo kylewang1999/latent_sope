@@ -105,11 +105,11 @@ def main() -> None:
     unguided_base_raw = report.unguided["baseline_unnormalized"]
     print(
         "unguided:"
-        f" raw_transition_rmse={unguided_gen_raw.transition_rmse:.6f}"
-        f" raw_state_rmse={unguided_gen_raw.state_rmse:.6f}"
-        f" raw_action_rmse={unguided_gen_raw.action_rmse:.6f}"
-        f" norm_transition_rmse={unguided_gen_norm.transition_rmse:.6f}"
-        f" baseline_raw_transition_rmse={unguided_base_raw.transition_rmse:.6f}"
+        f" raw_transition_rmse={unguided_gen_raw.rmse_transition:.6f}"
+        f" raw_state_rmse={unguided_gen_raw.rmse_state:.6f}"
+        f" raw_action_rmse={unguided_gen_raw.rmse_action:.6f}"
+        f" norm_transition_rmse={unguided_gen_norm.rmse_transition:.6f}"
+        f" baseline_raw_transition_rmse={unguided_base_raw.rmse_transition:.6f}"
         f" chunks={unguided_gen_raw.num_samples}"
     )
     if report.guided is not None:
@@ -118,11 +118,11 @@ def main() -> None:
         guided_base_raw = report.guided["baseline_unnormalized"]
         print(
             "guided:"
-            f" raw_transition_rmse={guided_gen_raw.transition_rmse:.6f}"
-            f" raw_state_rmse={guided_gen_raw.state_rmse:.6f}"
-            f" raw_action_rmse={guided_gen_raw.action_rmse:.6f}"
-            f" norm_transition_rmse={guided_gen_norm.transition_rmse:.6f}"
-            f" baseline_raw_transition_rmse={guided_base_raw.transition_rmse:.6f}"
+            f" raw_transition_rmse={guided_gen_raw.rmse_transition:.6f}"
+            f" raw_state_rmse={guided_gen_raw.rmse_state:.6f}"
+            f" raw_action_rmse={guided_gen_raw.rmse_action:.6f}"
+            f" norm_transition_rmse={guided_gen_norm.rmse_transition:.6f}"
+            f" baseline_raw_transition_rmse={guided_base_raw.rmse_transition:.6f}"
             f" chunks={guided_gen_raw.num_samples}"
         )
     if report.dataset_stats is not None:

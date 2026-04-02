@@ -7,6 +7,10 @@ __pycache__/
 .ipynb_checkpoints/
 data/
 scripts/
+!scripts/
+scripts/*
+!scripts/train_sope_gym.py
+!scripts/inspect_sope_gym_pdataset.ipynb
 logs*/
 *datasets/
 wandb/

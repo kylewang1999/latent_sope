@@ -1,4 +1,4 @@
-# Training Pipeline
+# Training And Chunk Evaluation Pipeline
 
 Relevant code:
 - [src/utils.py](../src/utils.py)
@@ -12,7 +12,7 @@ Relevant code:
 
 ## Summary
 
-This note consolidates the current SOPE training and evaluation pipeline.
+This note consolidates the current SOPE training and chunk-evaluation pipeline.
 
 The active codepath now uses:
 - `src/utils.py` as the shared utility and path surface
@@ -77,6 +77,49 @@ $$\begin{align}
 \end{align}$$
 
 This uses floored division so evaluation runs no more often than the requested count implies.
+
+## Chunk Evaluation
+
+The evaluator now supports chunk-level reconstruction metrics instead of only
+full-trajectory stitching.
+
+- The default path evaluates one sampled chunk at a time, conditioned on the
+  saved `frame_stack` states from the dataset.
+- Metrics are computed against the held-out ground-truth chunk on the
+  non-conditioned future window only.
+- Reported errors include transition, state, and action RMSE.
+- The evaluator also reports normalized-space chunk RMSE, a persistence
+  baseline on the same target, and simple dataset scale summaries for the
+  relevant state-action tensors.
+
+### Shared train-time and standalone eval path
+
+`src/train.py` now calls `evaluate_sope(...)` from
+[`src/eval.py`](../src/eval.py) instead of keeping a private evaluation helper.
+
+Behavior is intended to stay aligned between train-time and standalone
+checkpoint evaluation:
+
+- average held-out diffusion loss is computed over the eval loader
+- unguided chunk RMSE and persistence-baseline metrics come from the shared
+  chunk-evaluation path
+- the returned report carries one primary metric key, which defaults to
+  `gen_unnormalized`
+
+### Split compatibility
+
+Evaluation reproduces the same trajectory-level split rule used by training:
+
+- rollout files are shuffled with the training seed
+- the default split is the held-out `eval` split
+- when dataset normalization is enabled, eval chunks reuse normalization
+  statistics computed from the train split
+
+### Recent simplifications
+
+- `RMSEMetrics` is now used directly as the mutable chunk accumulator in
+  [`src/eval.py`](../src/eval.py)
+- per-step RMSE arrays were removed, leaving aggregate chunk metrics only
 
 ## Logging
 

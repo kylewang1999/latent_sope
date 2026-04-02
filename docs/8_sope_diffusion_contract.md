@@ -1,4 +1,4 @@
-# SOPE Diffusion Contract: Chunk Mapping, DDPM, and Conditioning
+# SOPE Diffusion Contract And EEF Debug Modes
 
 Relevant code:
 - [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py)
@@ -7,11 +7,14 @@ Relevant code:
 - [third_party/sope/opelab/core/baselines/diffusion/helpers.py](../third_party/sope/opelab/core/baselines/diffusion/helpers.py)
 - [third_party/sope/opelab/examples/d4rl/diffusion_trainer.py](../third_party/sope/opelab/examples/d4rl/diffusion_trainer.py)
 
-This note merges two questions:
+This note consolidates four closely related questions:
 
 1. how the local chunk fields map onto original SOPE
 2. how SOPE's `q_sample`, `p_losses`, and reverse sampling path map onto the
    standard DDPM equations
+3. how the EEF-only loss-mask ablation works in the full-state contract
+4. how the newer EEF-only unconditioned debug mode changes the dataset,
+   conditioning, and evaluation behavior
 
 The goal is to make the conditioning contract explicit.
 
@@ -258,6 +261,96 @@ $$\begin{align}
 \end{align}$$
 
 This is implemented in [src/sope_diffuser.py](../src/sope_diffuser.py):
+
+## EEF-Only Loss-Mask Ablation
+
+The rollout latents used by [`scripts/train_sope.py`](../scripts/train_sope.py)
+come from the low-dim concatenation path in
+[src/robomimic_interface/rollout.py](../src/robomimic_interface/rollout.py)
+and [src/robomimic_interface/encoders.py](../src/robomimic_interface/encoders.py).
+
+For robomimic low-dim Lift observations, the default sorted key order yields:
+
+- `object`: 10 dims
+- `robot0_eef_pos`: 3 dims
+- `robot0_eef_quat`: 4 dims
+- `robot0_gripper_qpos`: 2 dims
+
+Therefore the per-timestep `robot0_eef_pos` slice is `$[10:13)$`.
+
+`SopeDiffusionConfig.diffuser_eef_pos_only` is a loss-mask ablation on top of
+the full-state transition contract:
+
+- rollout, dataset, and model tensor shapes remain unchanged
+- only the future `robot0_eef_pos` slice contributes to diffusion loss
+- other state channels and all action channels remain present in model input
+  and output but are not supervised
+
+This is useful for checking whether poor chunk RMSE is concentrated in
+non-EEF channels while preserving the original SOPE-style conditioning path.
+
+## EEF-Only Unconditioned Debug Mode
+
+The narrower debug mode uses a dataset-schema change instead of a loss mask.
+
+With:
+
+- `RolloutChunkDatasetConfig.state_projection="eef_pos"`
+- `RolloutChunkDatasetConfig.disable_conditioning=True`
+- `SopeDiffusionConfig.conditioning_mode="none"`
+
+the robomimic rollout dataset now:
+
+- projects low-dimensional states to `robot0_eef_pos`
+- keeps the same batch keys for compatibility
+- zeroes action tensors so SOPE still sees the expected transition width
+- computes normalization stats over active EEF state dimensions plus zeroed
+  action placeholders
+
+The diffuser now:
+
+- returns `None` from `make_cond(...)`
+- trains on only the future chunk horizon instead of prefix-plus-future
+- ignores action channels in the diffusion loss for this mode
+
+This debug path is intentionally not the same thing as
+`diffuser_eef_pos_only=True`:
+
+- `diffuser_eef_pos_only=True` keeps the full-state dataset and only masks the
+  loss
+- `conditioning_mode="none"` with `state_projection="eef_pos"` actually
+  reduces the active state space to 3D EEF position and removes prefix-state
+  conditioning
+
+Full autoregressive trajectory generation remains unsupported for this
+unconditioned debug mode.
+
+## Evaluation-Side EEF Diagnostics
+
+The chunk evaluator in [src/eval.py](../src/eval.py) now computes
+`robot0_eef_pos` diagnostics from the same slice used by the training-time
+loss-mask ablation or the 3D projected debug path.
+
+When an EEF slice is available, eval reports:
+
+- `rmse_eef_pos`
+- `mean_eef_pos`
+- `mean_eef_pos_gt`
+
+Those diagnostics are included in the `eval_metrics:*` and
+`eval_diagnostics:*` summaries sent to `wandb`.
+
+If the state layout does not expose an EEF slice, those metrics remain unset
+instead of failing evaluation. In the unconditioned 3D debug path, action and
+transition metrics are also left unset because they are not meaningful.
+
+## Validation
+
+Small validation to rerun after changes:
+
+1. `python3 -m py_compile src/sope_diffuser.py src/eval.py src/train.py`
+2. one-batch diffusion loss smoke test for the active training mode
+3. chunk evaluation smoke test confirming the expected metric set is populated
 
 - `_build_training_target(...)` builds prefix steps as `[states_from, 0]`
 - `make_cond(...)` uses only `states_from`

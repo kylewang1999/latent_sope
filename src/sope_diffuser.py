@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
 import numpy as np
 import torch
@@ -94,9 +94,12 @@ class SopeDiffusionConfig:
     guided: bool = False
     guidance_hyperparams: Optional[Dict[str, Any]] = None
     diffuser_eef_pos_only: bool = False
+    conditioning_mode: Literal["prefix_states", "none"] = "prefix_states"
     
     @property
     def total_chunk_horizon(self) -> int:
+        if self.conditioning_mode == "none":
+            return self.chunk_horizon
         return self.chunk_horizon + self.frame_stack
 
 
@@ -169,6 +172,8 @@ class SopeDiffuser:
         robot0_gripper_qpos (2), so the per-timestep eef position slice is
         [10:13].
         """
+        if self.state_dim == 3:
+            return slice(0, 3)
         start = 10
         stop = 13
         if self.state_dim < stop:
@@ -178,6 +183,8 @@ class SopeDiffuser:
         return slice(start, stop)
 
     def _configure_diffusion_loss_targets(self) -> None:
+        if self.cfg.conditioning_mode == "none":
+            self.diffusion.loss_fn.weights[:, self.state_dim :] = 0.0
         if not self.cfg.diffuser_eef_pos_only:
             return
 
@@ -185,7 +192,8 @@ class SopeDiffuser:
         base_weights = weights.clone()
         weights.zero_()
         eef_slice = self._resolve_eef_pos_slice()
-        weights[self.cfg.frame_stack :, eef_slice] = base_weights[self.cfg.frame_stack :, eef_slice]
+        start_t = 0 if self.cfg.conditioning_mode == "none" else self.cfg.frame_stack
+        weights[start_t:, eef_slice] = base_weights[start_t:, eef_slice]
 
     def _disable_prefix_loss(self) -> None:
         """Treat historical prefix steps as conditioning only, not supervised targets."""
@@ -201,9 +209,15 @@ class SopeDiffuser:
         filled with zeros and excluded from the training loss so the model is
         trained to generate only the future chunk under state conditioning.
         """
-        prefix = torch.cat([batch["states_from"], torch.zeros_like(batch["actions_from"])], dim=-1)
-        # prefix = torch.cat([batch["states_from"],batch["actions_from"]], dim=-1)
-        future = torch.cat([batch["states_to"][:, :-1, :], batch["actions_to"]], dim=-1)
+        future_actions = batch["actions_to"]
+        if self.cfg.conditioning_mode == "none":
+            future_actions = torch.zeros_like(future_actions)
+            return torch.cat([batch["states_to"][:, :-1, :], future_actions], dim=-1)
+
+        prefix = torch.cat(
+            [batch["states_from"], torch.zeros_like(batch["actions_from"])], dim=-1
+        )
+        future = torch.cat([batch["states_to"][:, :-1, :], future_actions], dim=-1)
         return torch.cat([prefix, future], dim=1)
 
     def make_optimizer(self):
@@ -224,7 +238,9 @@ class SopeDiffuser:
         - cond: dictionary containing
             - 0: (B, state_dim * frame_stack)
         """
-        return {int(t): batch['states_from'][:,t,:] for t in range(self.cfg.frame_stack)}
+        if self.cfg.conditioning_mode == "none":
+            return None
+        return {int(t): batch["states_from"][:, t, :] for t in range(self.cfg.frame_stack)}
 
     def loss(self, batch, cond: Optional[dict] = None):
         """Compute the loss for a batch of chunks.
@@ -248,7 +264,7 @@ class SopeDiffuser:
 
     def sample(self, num_samples: int, cond=None, return_chain: bool = False, **kwargs):
         """Sample chunks from the diffusion model."""
-        shape = (num_samples, self.cfg.chunk_horizon+self.cfg.frame_stack-1, self.transition_dim)
+        shape = (num_samples, self.cfg.total_chunk_horizon, self.transition_dim)
         return self.diffusion.conditional_sample(
             shape,
             cond,
@@ -259,22 +275,52 @@ class SopeDiffuser:
 
 
 def cross_validate_configs(
-    cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_dataset: Any,
     cfg_diffusion: SopeDiffusionConfig,
 ):
-    assert isinstance(cfg_dataset, RolloutChunkDatasetConfig), \
-        f"cfg_dataset must be a RolloutChunkDatasetConfig, got {type(cfg_dataset)}"
-    assert isinstance(cfg_diffusion, SopeDiffusionConfig), \
-        f"cfg_diffusion must be a SopeDiffusionConfig, got {type(cfg_diffusion)}"
+    if not isinstance(cfg_diffusion, SopeDiffusionConfig):
+        raise TypeError(
+            f"cfg_diffusion must be a SopeDiffusionConfig, got {type(cfg_diffusion)}"
+        )
+
+    if not hasattr(cfg_dataset, "frame_stack"):
+        raise TypeError(
+            "cfg_dataset must expose frame_stack, state_dim or latents_dim, and action_dim. "
+            f"Got {type(cfg_dataset)}."
+        )
+
+    dataset_state_dim = getattr(cfg_dataset, "latents_dim", None)
+    if dataset_state_dim is None:
+        dataset_state_dim = getattr(cfg_dataset, "state_dim", None)
+    if dataset_state_dim is None:
+        raise TypeError(
+            "cfg_dataset must define either latents_dim or state_dim for diffusion shape validation."
+        )
+
+    dataset_action_dim = getattr(cfg_dataset, "action_dim", None)
+    if dataset_action_dim is None:
+        raise TypeError("cfg_dataset must define action_dim for diffusion shape validation.")
+
+    dataset_disable_conditioning = bool(
+        getattr(cfg_dataset, "disable_conditioning", False)
+    )
+    if dataset_disable_conditioning and cfg_diffusion.conditioning_mode != "none":
+        raise ValueError(
+            "Dataset disables conditioning, but diffusion config is not set to conditioning_mode='none'."
+        )
+    if (not dataset_disable_conditioning) and cfg_diffusion.conditioning_mode == "none":
+        raise ValueError(
+            "conditioning_mode='none' requires cfg_dataset.disable_conditioning=True so the dataset contract matches sampling/training."
+        )
 
     assert (
-        cfg_dataset.latents_dim == cfg_diffusion.state_dim
-    ), f"Config mismatch: RolloutChunkDatasetConfig.latents_dim must equal SopeDiffusionConfig.latent_dim ({cfg_dataset.latents_dim * cfg_dataset.frame_stack} != {cfg_diffusion.state_dim})."
+        int(dataset_state_dim) == cfg_diffusion.state_dim
+    ), f"Config mismatch: dataset state_dim must equal SopeDiffusionConfig.state_dim ({dataset_state_dim} != {cfg_diffusion.state_dim})."
 
-    assert cfg_dataset.action_dim == cfg_diffusion.action_dim,\
-        f"Config mismatch: RolloutChunkDatasetConfig.action_dim must equal action_dim ({cfg_dataset.action_dim} != {cfg_diffusion.action_dim})."
+    assert int(dataset_action_dim) == cfg_diffusion.action_dim, \
+        f"Config mismatch: dataset action_dim must equal SopeDiffusionConfig.action_dim ({dataset_action_dim} != {cfg_diffusion.action_dim})."
 
-    total_horizon = int(cfg_diffusion.chunk_horizon + cfg_diffusion.frame_stack)
+    total_horizon = int(cfg_diffusion.total_chunk_horizon)
     required_div = 2 ** (len(cfg_diffusion.dim_mults) - 1)
     if total_horizon % required_div != 0:
         raise ValueError(

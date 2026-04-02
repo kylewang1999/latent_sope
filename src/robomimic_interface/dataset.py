@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple, Dict
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -95,6 +95,16 @@ def _collect_frame_stack(latents: np.ndarray, t0: int, frame_stack: int) -> np.n
     return np.stack(frames, axis=0)
 
 
+def _resolve_eef_pos_slice(state_dim: int) -> slice:
+    start = 10
+    stop = 13
+    if state_dim < stop:
+        raise ValueError(
+            f"robot0_eef_pos slice [10:13] requires state_dim >= 13, got {state_dim}."
+        )
+    return slice(start, stop)
+
+
 @dataclass(frozen=True)
 class RolloutChunkDatasetConfig:
     """Config for rollout chunk dataset.
@@ -103,7 +113,8 @@ class RolloutChunkDatasetConfig:
     - stride: step between chunk start indices
     - frame_stack: number of past frames to condition on (overrides rollout/policy frame_stack)
     - source: "latents" (from RolloutLatentTrajectory.latents) or "obs" (from obs + encoder)
-    - include_actions: include actions in chunk targets
+    - state_projection: use the full state or just robot0_eef_pos
+    - disable_conditioning: zero action history/targets for unconditioned debug diffusion
     - normalize: apply dataset-level normalization stats
     - return_metadata: return index/demo_id/t0 metadatadata for debugging
     """
@@ -113,6 +124,8 @@ class RolloutChunkDatasetConfig:
     source: str = "latents"
     latents_dim: int = 19
     action_dim: int = 7
+    state_projection: Literal["full", "eef_pos"] = "full"
+    disable_conditioning: bool = False
     normalize: bool = False
     return_metadata: bool = True
 
@@ -139,7 +152,9 @@ class RolloutChunkDataset:
         self._validate_config()
 
         self.latents = self._preprocess_latents()
+        self.latents_dim = int(self.latents.shape[-1])
         self.actions = np.asarray(self.traj.actions, dtype=np.float32)
+        self.action_dim = int(self.actions.shape[-1])
 
         T = self.latents.shape[0]
         W = int(config.chunk_size)
@@ -156,9 +171,15 @@ class RolloutChunkDataset:
             # SOPE trajectory chunks: (s_t, a_t, s_{t+1}, ..., s_{t+W}) and actions (a_t..a_{t+W-1}).
             # incomplete chunks are discarded by the looping stride automatically
             states_to_list.append(self.latents[t0: t0+W+1])
-            actions_to_list.append(self.actions[t0 : t0+W])
-            states_from_list.append(_collect_frame_stack(self.latents, t0-1, S))
-            actions_from_list.append(_collect_frame_stack(self.actions, t0-1, S))
+            actions_to = self.actions[t0 : t0 + W]
+            states_from = _collect_frame_stack(self.latents, t0 - 1, S)
+            actions_from = _collect_frame_stack(self.actions, t0 - 1, S)
+            if self.config.disable_conditioning:
+                actions_to = np.zeros_like(actions_to, dtype=np.float32)
+                actions_from = np.zeros_like(actions_from, dtype=np.float32)
+            actions_to_list.append(actions_to)
+            states_from_list.append(states_from)
+            actions_from_list.append(actions_from)
             t0_list.append(int(t0))
 
         self.states_from = np.stack(states_from_list, axis=0).astype(np.float32)  # (N, frame_stack, Dz)
@@ -168,8 +189,6 @@ class RolloutChunkDataset:
         self.t0 = np.asarray(t0_list, dtype=np.int32)
         self._validate_data_shapes()
 
-        self.latents_dim = int(self.latents.shape[-1])
-        self.action_dim = int(self.actions.shape[-1])
         self.normalize = bool(config.normalize)
         self.return_metadata = bool(config.return_metadata)
         self.stats = self._compute_normalization_stats() if self.normalize else None
@@ -188,8 +207,8 @@ class RolloutChunkDataset:
         N = int(self.states_to.shape[0])
         W = int(self.config.chunk_size)
         S = int(self.config.frame_stack)
-        Dz = int(self.traj.latents.shape[-1])
-        Da = int(self.traj.actions.shape[-1])
+        Dz = int(self.latents_dim)
+        Da = int(self.action_dim)
         assert self.states_from.shape == (N, S, Dz), f"Expected states_from to have shape (N, S, Dz), got {self.states_from.shape}"
         assert self.actions_from.shape == (N, S, Da), f"Expected actions_from to have shape (N, S, Da), got {self.actions_from.shape}"
         assert self.states_to.shape == (N, W+1, Dz), f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
@@ -199,17 +218,31 @@ class RolloutChunkDataset:
         if self.config.source == "latents":
             z = np.asarray(self.traj.latents)
             if z.ndim == 3:
-                return z[:, 0, :]
-            return z
+                z = z[:, 0, :]
+            if self.config.state_projection == "eef_pos":
+                return np.asarray(
+                    z[:, _resolve_eef_pos_slice(z.shape[-1])],
+                    dtype=np.float32,
+                )
+            return np.asarray(z, dtype=np.float32)
 
         # otherwise, source == "obs"
         obs = self.traj.obs
         if self.obs_keys is not None:
             obs = {k: obs[k] for k in self.obs_keys}
-        return extract_embeddings_batched(self.encoder, obs, device=self.encoder_device)
+        z = extract_embeddings_batched(self.encoder, obs, device=self.encoder_device)
+        if self.config.state_projection == "eef_pos":
+            raise ValueError(
+                "state_projection='eef_pos' is only supported for source='latents'."
+            )
+        return z
 
     def _compute_normalization_stats(self) -> NormalizationStats:
-        x = np.concatenate([self.states_to[:, :-1, :], self.actions_to], axis=-1)
+        if self.config.disable_conditioning:
+            zeros = np.zeros_like(self.actions_to, dtype=np.float32)
+            x = np.concatenate([self.states_to[:, :-1, :], zeros], axis=-1)
+        else:
+            x = np.concatenate([self.states_to[:, :-1, :], self.actions_to], axis=-1)
         return compute_normalization_stats(x)
 
     @property
@@ -269,7 +302,7 @@ def _resolve_rollout_paths(paths: Sequence[Path]) -> List[Path]:
         p = Path(p)
         if p.is_dir():
             for ext in ("*.npz", "*.h5", "*.hdf5"):
-                resolved.extend(sorted(p.glob(ext)))
+                resolved.extend(sorted(p.rglob(ext)))
         else:
             resolved.append(p)
     resolved = [p for p in resolved if p.is_file()]
@@ -294,8 +327,8 @@ def make_rollout_chunk_dataloader(
 
     Expected `paths` behavior:
     - If `paths` is a singleton list whose only element is a directory, that
-      directory is scanned for rollout files matching `*.npz`, `*.h5`, and
-      `*.hdf5`, and every discovered file is loaded.
+      directory is scanned recursively for rollout files matching `*.npz`,
+      `*.h5`, and `*.hdf5`, and every discovered file is loaded.
     - If `paths` is a list of rollout file paths, each listed file is loaded
       directly.
     - Mixed inputs are also allowed: directory entries are expanded, file

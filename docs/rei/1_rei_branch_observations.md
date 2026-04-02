@@ -74,6 +74,127 @@ Observed limitations:
 - Termination handling and real `end_indices` tracking are still missing.
 - There is no single reusable `estimate_value(...)` function built on top of this sampler.
 
+### 2a. Conditioning And Normalization Contract In `rei/src`
+
+Relevant code:
+
+- [`rei/src/latent_sope/robomimic_interface/dataset.py`](../../../rei/src/latent_sope/robomimic_interface/dataset.py)
+- [`rei/src/latent_sope/diffusion/sope_diffuser.py`](../../../rei/src/latent_sope/diffusion/sope_diffuser.py)
+- [`rei/src/latent_sope/diffusion/train.py`](../../../rei/src/latent_sope/diffusion/train.py)
+- [`rei/src/latent_sope/eval/metrics.py`](../../../rei/src/latent_sope/eval/metrics.py)
+
+What the reusable path does:
+
+- `RolloutChunkDataset` slices each rollout into `states_from`,
+  `actions_from`, `states_to`, and `actions_to`
+- `SopeDiffuser.loss(...)` concatenates prefix and future chunks into one
+  training trajectory
+- `make_cond(...)` conditions only on prefix states, not on prefix actions
+
+So the reusable `rei/src` path is best described as:
+
+- state-conditioned chunk diffusion
+- with prefixed action history carried in the target tensor rather than in the
+  hard conditioning dict
+
+Observed normalization issue in the branch:
+
+- `make_rollout_chunk_dataloader(...)` computes one shared normalization over
+  `[state, action]` transitions
+- `states_from`, `states_to`, and `actions_to` are normalized
+- `actions_from` is left in raw units
+
+That means the reusable branch path mixes normalized state prefixes with raw
+action prefixes inside the training target, which is a real contract mismatch.
+
+The reusable branch sampling path still relies on normalization functions for:
+
+- initial-state normalization
+- sampled-chunk unnormalization
+- carrying the next conditioning state forward in normalized space
+
+### 2b. Notebook-Specific Conditioning In `v0.2.5.14`
+
+The `v0.2.5.14` notebook family does not use the reusable `rei/src` path
+described above.
+
+Instead, those notebooks:
+
+- instantiate `TemporalUnet` and `GaussianDiffusion` directly
+- build notebook-local `normalize_fn` and `unnormalize_fn`
+- condition on only one state at one timestep
+- update that single-state condition autoregressively after each chunk
+
+The conditioning loop is therefore much simpler than the reusable
+frame-stacked path. In pseudocode, it looks like:
+
+```python
+# initial state in raw state space
+state0 = initial_state
+
+# move into notebook-local normalized diffusion space
+cond_init = normalize_fn(concat(state0, zeros_action))[:, :state_dim]
+conditions = {0: cond_init}
+
+generated_chunks = []
+for chunk_idx in range(num_chunks):
+    sample = diffusion_model.conditional_sample(
+        shape=(batch_size, horizon, state_dim + action_dim),
+        cond=conditions,
+        guided=guided,
+        ...
+    )
+
+    # sample.trajectories is still in normalized diffusion space
+    chunk_norm = sample.trajectories
+    chunk_raw = unnormalize_fn(chunk_norm)
+    generated_chunks.append(chunk_raw)
+
+    # carry forward only the final generated state, not a frame stack
+    last_state_norm = chunk_norm[:, -1, :state_dim]
+    conditions = {0: last_state_norm}
+```
+
+Conceptually, the notebook path is:
+
+- initialize with one normalized state at diffusion timestep index `0`
+- generate one chunk
+- take the last generated state from that chunk
+- reuse that last state as the only condition for the next chunk
+
+So the effective contract is:
+
+```python
+cond = {0: current_state}
+```
+
+not:
+
+```python
+cond = {
+    0: prefix_state_0,
+    1: prefix_state_1,
+    ...,
+    S - 1: prefix_state_{S-1},
+}
+```
+
+and not:
+
+```python
+cond = {
+    t: (state_t, action_t)
+}
+```
+
+This matters because the notebook path is really "single-state autoregressive
+chunk stitching" rather than "state-conditioned chunk diffusion with a
+frame-stacked history."
+
+So conclusions from the `v0.2.5.14` experiments should be interpreted as
+evidence about that notebook-local sampling procedure, not about the reusable
+branch pipeline as a whole.
+
 ### 3. Rollout Collection From Robomimic Policies
 
 Relevant code:

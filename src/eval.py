@@ -17,6 +17,27 @@ if TYPE_CHECKING:
 NP_FLOAT = np.float32
 
 
+def _tracks_only_eef_pos(diffuser: SopeDiffuser) -> bool:
+    return (
+        int(diffuser.state_dim) == 3
+        and getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none"
+    )
+
+
+def _resolve_eval_eef_pos_slice(diffuser: SopeDiffuser) -> Optional[slice]:
+    if _tracks_only_eef_pos(diffuser):
+        return slice(0, 3)
+    if diffuser.state_dim < 13:
+        return None
+    resolve_eef_pos_slice = getattr(diffuser, "_resolve_eef_pos_slice", None)
+    if not callable(resolve_eef_pos_slice):
+        return None
+    try:
+        return resolve_eef_pos_slice()
+    except ValueError:
+        return None
+
+
 @dataclass
 class RMSEMetrics:
     loss: Optional[float] = None
@@ -142,7 +163,11 @@ def _build_gt_future_chunk(
     diffuser: SopeDiffuser,
     batch: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
-    gt_chunk = torch.cat([batch["states_to"][:, :-1, :], batch["actions_to"]], dim=-1)
+    if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
+        zeros = torch.zeros_like(batch["actions_to"])
+        gt_chunk = torch.cat([batch["states_to"][:, :-1, :], zeros], dim=-1)
+    else:
+        gt_chunk = torch.cat([batch["states_to"][:, :-1, :], batch["actions_to"]], dim=-1)
     return {
         "normalized": gt_chunk,
         "unnormalized": diffuser.unnormalizer(gt_chunk),
@@ -155,8 +180,12 @@ def _build_persistence_baseline_chunk(
     *,
     normalized: bool,
 ) -> torch.Tensor:
-    last_state = batch["states_from"][:, -1:, :].expand(-1, diffuser.cfg.chunk_horizon, -1)
-    last_action = batch["actions_from"][:, -1:, :].expand(-1, diffuser.cfg.chunk_horizon, -1)
+    if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
+        last_state = batch["states_to"][:, :1, :].expand(-1, diffuser.cfg.chunk_horizon, -1)
+        last_action = torch.zeros_like(batch["actions_to"])
+    else:
+        last_state = batch["states_from"][:, -1:, :].expand(-1, diffuser.cfg.chunk_horizon, -1)
+        last_action = batch["actions_from"][:, -1:, :].expand(-1, diffuser.cfg.chunk_horizon, -1)
     baseline = torch.cat([last_state, last_action], dim=-1)
     if normalized:
         return baseline
@@ -183,7 +212,9 @@ def _sample_future_chunk_normalized(
         verbose=verbose,
         **(guidance_kw or {}),
     )
-    return sample.trajectories[:, diffuser.cfg.frame_stack:, :]
+    if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
+        return sample.trajectories
+    return sample.trajectories[:, diffuser.cfg.frame_stack :, :]
 
 
 def _finalize_chunk_metrics(metrics: RMSEMetrics) -> RMSEMetrics:
@@ -201,15 +232,24 @@ def _finalize_chunk_metrics(metrics: RMSEMetrics) -> RMSEMetrics:
     if metrics.rmse_eef_pos is not None:
         eef_pos_dim = 3
 
-    metrics.mean_transition = float(metrics.mean_transition / denom_transition)
-    metrics.mean_state = float(metrics.mean_state / denom_state)
-    metrics.mean_action = float(metrics.mean_action / denom_action)
-    metrics.mean_transition_gt = float(metrics.mean_transition_gt / denom_transition)
-    metrics.mean_state_gt = float(metrics.mean_state_gt / denom_state)
-    metrics.mean_action_gt = float(metrics.mean_action_gt / denom_action)
-    metrics.rmse_transition = float(np.sqrt(metrics.rmse_transition / denom_transition))
-    metrics.rmse_state = float(np.sqrt(metrics.rmse_state / denom_state))
-    metrics.rmse_action = float(np.sqrt(metrics.rmse_action / denom_action))
+    if metrics.mean_transition is not None:
+        metrics.mean_transition = float(metrics.mean_transition / denom_transition)
+    if metrics.mean_state is not None:
+        metrics.mean_state = float(metrics.mean_state / denom_state)
+    if metrics.mean_action is not None:
+        metrics.mean_action = float(metrics.mean_action / denom_action)
+    if metrics.mean_transition_gt is not None:
+        metrics.mean_transition_gt = float(metrics.mean_transition_gt / denom_transition)
+    if metrics.mean_state_gt is not None:
+        metrics.mean_state_gt = float(metrics.mean_state_gt / denom_state)
+    if metrics.mean_action_gt is not None:
+        metrics.mean_action_gt = float(metrics.mean_action_gt / denom_action)
+    if metrics.rmse_transition is not None:
+        metrics.rmse_transition = float(np.sqrt(metrics.rmse_transition / denom_transition))
+    if metrics.rmse_state is not None:
+        metrics.rmse_state = float(np.sqrt(metrics.rmse_state / denom_state))
+    if metrics.rmse_action is not None:
+        metrics.rmse_action = float(np.sqrt(metrics.rmse_action / denom_action))
     if eef_pos_dim is not None:
         denom_eef_pos = max(total_steps * eef_pos_dim, 1)
         metrics.mean_eef_pos = float(metrics.mean_eef_pos / denom_eef_pos)
@@ -229,31 +269,26 @@ def evaluate_diffusion_chunk_mse(
 ) -> tuple[dict[str, RMSEMetrics], Optional[dict[str, RMSEMetrics]]]:
     eval_device = torch.device(device or diffuser.device)
     diffuser.diffusion.eval()
-    eef_pos_slice: Optional[slice] = None
-    if diffuser.state_dim >= 13:
-        resolve_eef_pos_slice = getattr(diffuser, "_resolve_eef_pos_slice", None)
-        if callable(resolve_eef_pos_slice):
-            try:
-                eef_pos_slice = resolve_eef_pos_slice()
-            except ValueError:
-                eef_pos_slice = None
+    eef_pos_slice = _resolve_eval_eef_pos_slice(diffuser)
+    eef_only_mode = _tracks_only_eef_pos(diffuser)
 
     def _init_accumulator() -> RMSEMetrics:
         metrics = RMSEMetrics(
-            rmse_transition=0.0,
-            rmse_state=0.0,
-            rmse_action=0.0,
-            mean_transition=0.0,
-            mean_state=0.0,
-            mean_action=0.0,
-            mean_transition_gt=0.0,
-            mean_state_gt=0.0,
-            mean_action_gt=0.0,
             num_samples=0,
             horizon=int(diffuser.cfg.chunk_horizon),
             state_dim=int(diffuser.state_dim),
             action_dim=int(diffuser.action_dim),
         )
+        if not eef_only_mode:
+            metrics.rmse_transition = 0.0
+            metrics.rmse_state = 0.0
+            metrics.rmse_action = 0.0
+            metrics.mean_transition = 0.0
+            metrics.mean_state = 0.0
+            metrics.mean_action = 0.0
+            metrics.mean_transition_gt = 0.0
+            metrics.mean_state_gt = 0.0
+            metrics.mean_action_gt = 0.0
         if eef_pos_slice is not None:
             metrics.rmse_eef_pos = 0.0
             metrics.mean_eef_pos = 0.0
@@ -270,31 +305,34 @@ def evaluate_diffusion_chunk_mse(
         sq_err_action = sq_err[..., diffuser.state_dim :]
         if eef_pos_slice is not None:
             sq_err_eef_pos = sq_err_state[..., eef_pos_slice]
-        pred_chunk = pred_chunk ** 2 
-        gt_chunk = gt_chunk ** 2
-        pred_chunk_state = pred_chunk[..., : diffuser.state_dim]
-        pred_chunk_action = pred_chunk[..., diffuser.state_dim :]
-        gt_chunk_state = gt_chunk[..., : diffuser.state_dim]
-        gt_chunk_action = gt_chunk[..., diffuser.state_dim :]
+        pred_sq = pred_chunk ** 2
+        gt_sq = gt_chunk ** 2
+        pred_chunk_state = pred_sq[..., : diffuser.state_dim]
+        pred_chunk_action = pred_sq[..., diffuser.state_dim :]
+        gt_chunk_state = gt_sq[..., : diffuser.state_dim]
+        gt_chunk_action = gt_sq[..., diffuser.state_dim :]
         if eef_pos_slice is not None:
             pred_chunk_eef_pos = pred_chunk_state[..., eef_pos_slice]
             gt_chunk_eef_pos = gt_chunk_state[..., eef_pos_slice]
 
         batch_chunks = int(pred_chunk.shape[0])
         accumulator.num_samples += batch_chunks
-        accumulator.rmse_transition += float(sq_err.sum().item())
-        accumulator.rmse_state += float(sq_err_state.sum().item())
-        accumulator.rmse_action += float(sq_err_action.sum().item())
+        if not eef_only_mode:
+            accumulator.rmse_transition += float(sq_err.sum().item())
+            accumulator.rmse_state += float(sq_err_state.sum().item())
+            accumulator.rmse_action += float(sq_err_action.sum().item())
         if eef_pos_slice is not None:
             accumulator.rmse_eef_pos += float(sq_err_eef_pos.sum().item())
-        accumulator.mean_transition += float(pred_chunk.sum().item())
-        accumulator.mean_state += float(pred_chunk_state.sum().item())
-        accumulator.mean_action += float(pred_chunk_action.sum().item())
+        if not eef_only_mode:
+            accumulator.mean_transition += float(pred_sq.sum().item())
+            accumulator.mean_state += float(pred_chunk_state.sum().item())
+            accumulator.mean_action += float(pred_chunk_action.sum().item())
         if eef_pos_slice is not None:
             accumulator.mean_eef_pos += float(pred_chunk_eef_pos.sum().item())
-        accumulator.mean_transition_gt += float(gt_chunk.sum().item())
-        accumulator.mean_state_gt += float(gt_chunk_state.sum().item())
-        accumulator.mean_action_gt += float(gt_chunk_action.sum().item())
+        if not eef_only_mode:
+            accumulator.mean_transition_gt += float(gt_sq.sum().item())
+            accumulator.mean_state_gt += float(gt_chunk_state.sum().item())
+            accumulator.mean_action_gt += float(gt_chunk_action.sum().item())
         if eef_pos_slice is not None:
             accumulator.mean_eef_pos_gt += float(gt_chunk_eef_pos.sum().item())
 
@@ -467,14 +505,82 @@ def _build_split_loader(
     seed: int,
     batch_size: int,
     device: Optional[str] = None,
-) -> tuple[torch.utils.data.DataLoader, list[Path], dict[str, dict[str, float]]]:
-    from src.robomimic_interface.dataset import RolloutChunkDatasetConfig, make_rollout_chunk_dataloader
+) -> tuple[torch.utils.data.DataLoader, list[Any], dict[str, dict[str, float]]]:
     from src.robomimic_interface.dataset import summarize_dataset_feature_stats
     from src.train import _assign_dataset_stats, _split_rollout_paths
 
-    cfg_dataset = RolloutChunkDatasetConfig(**checkpoint_payload["dataset_config"])
     training_payload = checkpoint_payload.get("training_config") or {}
+    data_kind = str(training_payload.get("data_kind", "rollout"))
     train_fraction = float(training_payload.get("train_fraction", 0.8))
+
+    if data_kind == "sope_gym":
+        from src.sope_interface.dataset import (
+            SopeGymChunkDatasetConfig,
+            make_sope_gym_chunk_dataloader,
+            split_sope_gym_episodes,
+            train_eval_split_sope_gym_episodes,
+        )
+
+        cfg_dataset = SopeGymChunkDatasetConfig(**checkpoint_payload["dataset_config"])
+        episodes = split_sope_gym_episodes(data_path)
+        train_episodes, eval_episodes = train_eval_split_sope_gym_episodes(
+            episodes,
+            seed=seed,
+            train_fraction=train_fraction,
+        )
+
+        if split == "train":
+            selected_episodes = train_episodes
+        elif split == "eval":
+            if not eval_episodes:
+                raise ValueError(
+                    "Requested eval split, but the SOPE Gym dataset does not produce a held-out split."
+                )
+            selected_episodes = eval_episodes
+        elif split == "all":
+            selected_episodes = train_episodes + eval_episodes
+        else:
+            raise ValueError(f"Unknown split={split}. Expected one of: train, eval, all.")
+
+        train_loader, train_stats = make_sope_gym_chunk_dataloader(
+            episodes=train_episodes,
+            config=cfg_dataset,
+            batch_size=batch_size,
+            num_workers=0,
+            shuffle=False,
+            drop_last=False,
+        )
+        if split == "train":
+            return (
+                train_loader,
+                [episode.episode_id for episode in selected_episodes],
+                summarize_dataset_feature_stats(train_loader.dataset),
+            )
+
+        selected_loader, _ = make_sope_gym_chunk_dataloader(
+            episodes=selected_episodes,
+            config=cfg_dataset,
+            batch_size=batch_size,
+            num_workers=0,
+            shuffle=False,
+            drop_last=False,
+        )
+        _assign_dataset_stats(
+            selected_loader.dataset,
+            train_stats if cfg_dataset.normalize else None,
+        )
+        return (
+            selected_loader,
+            [episode.episode_id for episode in selected_episodes],
+            summarize_dataset_feature_stats(selected_loader.dataset),
+        )
+
+    from src.robomimic_interface.dataset import (
+        RolloutChunkDatasetConfig,
+        make_rollout_chunk_dataloader,
+    )
+
+    cfg_dataset = RolloutChunkDatasetConfig(**checkpoint_payload["dataset_config"])
     train_paths, eval_paths = _split_rollout_paths(
         [data_path],
         seed=seed,
@@ -587,6 +693,11 @@ def generate_full_trajectory(
     verbose: bool = False,
     **guidance_kw: Any,
 ) -> tuple[np.ndarray, np.ndarray]:
+    if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
+        raise NotImplementedError(
+            "generate_full_trajectory does not support conditioning_mode='none'. "
+            "Use chunk-level evaluation for the EEF-only debug path."
+        )
     diffuser.diffusion.eval()
 
     batch_size = int(initial_states.shape[0])
