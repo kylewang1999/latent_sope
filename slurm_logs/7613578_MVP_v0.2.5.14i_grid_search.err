@@ -1,0 +1,124 @@
+[NbConvertApp] Converting notebook experiments/2026-03-26/MVP_v0.2.5.14i_grid_search.ipynb to notebook
+Traceback (most recent call last):
+  File "/home1/reishuen/miniconda3/envs/latent_sope/bin/jupyter-nbconvert", line 6, in <module>
+    sys.exit(main())
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/application.py", line 284, in launch_instance
+    super().launch_instance(argv=argv, **kwargs)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/traitlets/config/application.py", line 1075, in launch_instance
+    app.start()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+    self.convert_notebooks()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+    self.convert_single_notebook(notebook_filename)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+    output, resources = self.export_single_notebook(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+    output, resources = self.exporter.from_filename(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+    return self.from_file(f, resources=resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 220, in from_file
+    return self.from_notebook_node(
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/notebook.py", line 36, in from_notebook_node
+    nb_copy, resources = super().from_notebook_node(nb, resources, **kw)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 154, in from_notebook_node
+    nb_copy, resources = self._preprocess(nb_copy, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/exporters/exporter.py", line 353, in _preprocess
+    nbc, resc = preprocessor(nbc, resc)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/base.py", line 48, in __call__
+    return self.preprocess(nb, resources)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 103, in preprocess
+    self.preprocess_cell(cell, resources, index)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbconvert/preprocessors/execute.py", line 124, in preprocess_cell
+    cell = self.execute_cell(cell, index, store_history=True)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/jupyter_core/utils/__init__.py", line 165, in wrapped
+    return loop.run_until_complete(inner)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 1062, in async_execute_cell
+    await self._check_raise_for_error(cell, cell_index, exec_reply)
+  File "/home1/reishuen/miniconda3/envs/latent_sope/lib/python3.10/site-packages/nbclient/client.py", line 918, in _check_raise_for_error
+    raise CellExecutionError.from_cell_and_msg(cell, exec_reply_content)
+nbclient.exceptions.CellExecutionError: An error occurred while executing the following cell:
+------------------
+# ── Summary tables ──
+print("=" * 120)
+print("v0.2.5.14i: 2D GRID SEARCH (score_timestep x action_scale)")
+print(f"6 policies, pos-only guidance, normalize_grad=True")
+print("=" * 120)
+
+# Rho hard heatmap table
+print(f"\n--- Spearman rho (HARD reward) ---")
+header = f"{'t \\ scale':<10}" + "".join(f"{s:>8}" for s in ACTION_SCALES)
+print(header)
+print("-" * len(header))
+for st in SCORE_TIMESTEPS:
+    row = f"{st:<10}"
+    for scale in ACTION_SCALES:
+        rho = grid_metrics[(st, scale)]["rho_hard"]
+        row += f"{rho:>+8.3f}"
+    print(row)
+
+# Rho sigmoid heatmap table
+print(f"\n--- Spearman rho (SIGMOID reward) ---")
+header = f"{'t \\ scale':<10}" + "".join(f"{s:>8}" for s in ACTION_SCALES)
+print(header)
+print("-" * len(header))
+for st in SCORE_TIMESTEPS:
+    row = f"{st:<10}"
+    for scale in ACTION_SCALES:
+        rho = grid_metrics[(st, scale)]["rho_sigm"]
+        row += f"{rho:>+8.3f}"
+    print(row)
+
+# RMSE hard heatmap table
+print(f"\n--- RMSE (HARD reward) ---")
+header = f"{'t \\ scale':<10}" + "".join(f"{s:>8}" for s in ACTION_SCALES)
+print(header)
+print("-" * len(header))
+for st in SCORE_TIMESTEPS:
+    row = f"{st:<10}"
+    for scale in ACTION_SCALES:
+        rmse = grid_metrics[(st, scale)]["rmse_hard"]
+        row += f"{rmse:>8.4f}"
+    print(row)
+
+# Regret@1 hard heatmap table
+print(f"\n--- Regret@1 (HARD reward) ---")
+header = f"{'t \\ scale':<10}" + "".join(f"{s:>8}" for s in ACTION_SCALES)
+print(header)
+print("-" * len(header))
+for st in SCORE_TIMESTEPS:
+    row = f"{st:<10}"
+    for scale in ACTION_SCALES:
+        r1 = grid_metrics[(st, scale)]["regret1_hard"]
+        row += f"{r1:>8.3f}"
+    print(row)
+
+# Best cells
+best_hard = max(grid_metrics, key=lambda k: grid_metrics[k]["rho_hard"])
+best_sigm = max(grid_metrics, key=lambda k: grid_metrics[k]["rho_sigm"])
+print(f"\nBest rho_hard: t={best_hard[0]}, scale={best_hard[1]} -> {grid_metrics[best_hard]['rho_hard']:+.3f}")
+print(f"Best rho_sigm: t={best_sigm[0]}, scale={best_sigm[1]} -> {grid_metrics[best_sigm]['rho_sigm']:+.3f}")
+
+# Top-5 cells by rho_hard
+print(f"\nTop-5 cells (rho_hard):")
+sorted_cells = sorted(grid_metrics, key=lambda k: grid_metrics[k]["rho_hard"], reverse=True)
+for i, k in enumerate(sorted_cells[:5]):
+    m = grid_metrics[k]
+    print(f"  {i+1}. t={k[0]:>2}, scale={k[1]:<4} -> rho_H={m['rho_hard']:+.3f}, rho_S={m['rho_sigm']:+.3f}, R@1_H={m['regret1_hard']:.3f}")
+
+# Top-5 cells by rho_sigm
+print(f"\nTop-5 cells (rho_sigm):")
+sorted_cells_s = sorted(grid_metrics, key=lambda k: grid_metrics[k]["rho_sigm"], reverse=True)
+for i, k in enumerate(sorted_cells_s[:5]):
+    m = grid_metrics[k]
+    print(f"  {i+1}. t={k[0]:>2}, scale={k[1]:<4} -> rho_S={m['rho_sigm']:+.3f}, rho_H={m['rho_hard']:+.3f}, R@1_S={m['regret1_sigm']:.3f}")
+------------------
+
+
+[0;36m  Cell [0;32mIn[10], line 9[0;36m[0m
+[0;31m    header = f"{'t \\ scale':<10}" + "".join(f"{s:>8}" for s in ACTION_SCALES)[0m
+[0m                                   ^[0m
+[0;31mSyntaxError[0m[0;31m:[0m f-string expression part cannot include a backslash
+
+
