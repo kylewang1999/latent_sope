@@ -6,7 +6,7 @@ import sys
 import functools
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -20,11 +20,6 @@ if TYPE_CHECKING:
     from src.robomimic_interface.dataset import (
         NormalizationStats as DatasetNormalizationStats,
         RolloutChunkDatasetConfig,
-    )
-    from src.sope_diffuser import (
-        NormalizationStats as SopeNormalizationStats,
-        SopeDiffuser,
-        SopeDiffusionConfig,
     )
 
 PathLike = Union[str, Path]
@@ -74,16 +69,6 @@ def _to_device(
     return out
 
 
-def _convert_stats(
-    stats: Optional[DatasetNormalizationStats],
-) -> Optional[SopeNormalizationStats]:
-    from src.sope_diffuser import NormalizationStats as SopeNormalizationStats
-
-    if stats is None:
-        return None
-    return SopeNormalizationStats(mean=stats.mean, std=stats.std)
-
-
 def _serialize_training_config(cfg_training: TrainingConfig) -> dict[str, Any]:
     payload = asdict(cfg_training)
     payload["data"] = [str(path) for path in _as_paths(cfg_training.data)]
@@ -97,18 +82,20 @@ def _serialize_training_config(cfg_training: TrainingConfig) -> dict[str, Any]:
 
 def _save_checkpoint(
     path: Path,
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     epoch: int,
     step: int,
-    cfg_diffusion: SopeDiffusionConfig,
+    cfg_diffusion: Any,
     cfg_dataset: Any,
     cfg_training: TrainingConfig,
-    stats: Optional[DatasetNormalizationStats],
+    stats: Optional["DatasetNormalizationStats"],
+    diffuser_kind: str,
 ) -> None:
     payload = {
         "diffusion_state_dict": diffuser.diffusion.state_dict(),
         "epoch": int(epoch),
         "step": int(step),
+        "diffuser_kind": diffuser_kind,
         "diffusion_config": asdict(cfg_diffusion),
         "dataset_config": asdict(cfg_dataset),
         "training_config": _serialize_training_config(cfg_training),
@@ -121,11 +108,13 @@ def _save_checkpoint(
 
 def _save_configs(
     path: Path,
-    cfg_diffusion: SopeDiffusionConfig,
+    cfg_diffusion: Any,
     cfg_dataset: Any,
     cfg_training: TrainingConfig,
+    diffuser_kind: str,
 ) -> None:
     payload = {
+        "diffuser_kind": diffuser_kind,
         "diffusion_config": asdict(cfg_diffusion),
         "dataset_config": asdict(cfg_dataset),
         "training_config": _serialize_training_config(cfg_training),
@@ -163,6 +152,20 @@ def _flatten_scalar_metrics(info: Any) -> dict[str, float]:
         elif np.isscalar(value):
             flat[key] = float(value)
     return flat
+
+
+def _call_loss(
+    diffuser: Any,
+    batch_t: dict[str, torch.Tensor],
+    *,
+    compute_batch_rmse: bool = False,
+) -> Any:
+    try:
+        return diffuser.loss(batch_t, compute_batch_rmse=compute_batch_rmse)
+    except TypeError as exc:
+        if "compute_batch_rmse" not in str(exc):
+            raise
+        return diffuser.loss(batch_t)
 
 
 def _build_lr_scheduler(
@@ -232,6 +235,84 @@ def _patch_torch_optimizer_for_missing_sympy() -> None:
             setattr(attr, "step", _patched_step)
 
 
+def _patch_wandb_sentry_deprecations() -> None:
+    """Patch W&B 0.24's deprecated Sentry calls to the current APIs."""
+    import wandb.analytics.sentry as sentry_mod
+    from urllib.parse import quote
+    from wandb.sdk.wandb_settings import Settings
+
+    if getattr(sentry_mod.Sentry.configure_scope, "_wkt_sope_patched", False):
+        return
+
+    @sentry_mod._guard
+    def _configure_scope(
+        self,
+        tags: dict[str, Any] | None = None,
+        process_context: str | None = None,
+    ) -> None:
+        if self.scope is None:
+            return
+
+        settings_tags = (
+            "entity",
+            "project",
+            "run_id",
+            "run_url",
+            "sweep_url",
+            "sweep_id",
+            "deployment",
+            "launch",
+            "_platform",
+        )
+
+        if process_context:
+            self.scope.set_tag("process_context", process_context)
+
+        if tags is None:
+            return None
+
+        for tag in settings_tags:
+            val = tags.get(tag, None)
+            if val not in (None, ""):
+                self.scope.set_tag(tag, val)
+
+        if tags.get("_colab", None):
+            python_runtime = "colab"
+        elif tags.get("_jupyter", None):
+            python_runtime = "jupyter"
+        elif tags.get("_ipython", None):
+            python_runtime = "ipython"
+        else:
+            python_runtime = "python"
+        self.scope.set_tag("python_runtime", python_runtime)
+
+        for obj in ("run", "sweep"):
+            obj_id, obj_url = f"{obj}_id", f"{obj}_url"
+            if tags.get(obj_url, None):
+                continue
+            try:
+                base_url = tags.get("base_url")
+                if not base_url:
+                    continue
+                app_url = Settings(base_url=base_url).app_url
+                entity, project = (quote(tags[k]) for k in ("entity", "project"))
+                self.scope.set_tag(
+                    obj_url,
+                    f"{app_url}/{entity}/{project}/{obj}s/{tags[obj_id]}",
+                )
+            except Exception:
+                pass
+
+        email = tags.get("email")
+        if email:
+            self.scope.set_user({"email": email})
+
+        self.start_session()
+
+    _configure_scope._wkt_sope_patched = True  # type: ignore[attr-defined]
+    sentry_mod.Sentry.configure_scope = _configure_scope
+
+
 def _resolve_save_every(cfg_training: TrainingConfig) -> int:
     if cfg_training.num_saves <= 0:
         raise ValueError(f"num_saves must be positive, got {cfg_training.num_saves}.")
@@ -288,17 +369,25 @@ def _stringify_refs(refs: Optional[Sequence[Any]]) -> list[str]:
 def train_sope_with_loaders(
     *,
     cfg_dataset: Any,
-    cfg_diffusion: SopeDiffusionConfig,
+    cfg_diffusion: Any,
     cfg_training: TrainingConfig,
     loader: torch.utils.data.DataLoader,
     eval_loader: Optional[torch.utils.data.DataLoader],
-    stats: Optional[DatasetNormalizationStats],
+    stats: Optional["DatasetNormalizationStats"],
     train_data_refs: Optional[Sequence[Any]] = None,
     eval_data_refs: Optional[Sequence[Any]] = None,
+    diffuser_cls: Optional[type[Any]] = None,
+    cross_validate_fn: Optional[Callable[[Any, Any], None]] = None,
+    diffuser_kind: str = "sope",
 ) -> None:
     from src.eval import evaluate_sope
-    from src.sope_diffuser import SopeDiffuser, cross_validate_configs
     import wandb
+    _patch_wandb_sentry_deprecations()
+    if diffuser_cls is None or cross_validate_fn is None:
+        from src.sope_diffuser import SopeDiffuser, cross_validate_configs
+
+        diffuser_cls = diffuser_cls or SopeDiffuser
+        cross_validate_fn = cross_validate_fn or cross_validate_configs
 
     set_global_seed(cfg_training.seed)
 
@@ -332,12 +421,12 @@ def train_sope_with_loaders(
                 "diffuser_eef_pos_only requires either state_projection='eef_pos' or a low-dim robomimic state with robot0_eef_pos at slice [10:13]."
             )
 
-    cross_validate_configs(cfg_dataset, cfg_diffusion)
+    cross_validate_fn(cfg_dataset, cfg_diffusion)
 
     _patch_torch_optimizer_for_missing_sympy()
-    diffuser = SopeDiffuser(
+    diffuser = diffuser_cls(
         cfg=cfg_diffusion,
-        normalization_stats=_convert_stats(stats),
+        normalization_stats=stats,
         device=device_str,
     )
     optimizer = torch.optim.Adam(
@@ -369,7 +458,13 @@ def train_sope_with_loaders(
     )
     if checkpoint_dir is not None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        _save_configs(checkpoint_dir / "configs.json", cfg_diffusion, cfg_dataset, cfg_training)
+        _save_configs(
+            checkpoint_dir / "configs.json",
+            cfg_diffusion,
+            cfg_dataset,
+            cfg_training,
+            diffuser_kind=diffuser_kind,
+        )
 
     run = None
     if cfg_training.wandb_project:
@@ -406,10 +501,18 @@ def train_sope_with_loaders(
             epoch_loss_sum = 0.0
             epoch_batches = 0
 
-            for batch in loader:
+            for batch_idx, batch in enumerate(loader):
                 step += 1
                 batch_t = _to_device(batch, device)
-                loss_out = diffuser.loss(batch_t)
+                compute_batch_rmse = (
+                    batch_idx == (steps_per_epoch - 1)
+                    or (max_steps is not None and step >= max_steps)
+                )
+                loss_out = _call_loss(
+                    diffuser=diffuser,
+                    batch_t=batch_t,
+                    compute_batch_rmse=compute_batch_rmse,
+                )
                 if isinstance(loss_out, tuple):
                     loss, info = loss_out
                 else:
@@ -484,6 +587,7 @@ def train_sope_with_loaders(
                     cfg_dataset,
                     cfg_training,
                     stats,
+                    diffuser_kind,
                 )
                 latest_path = checkpoint_dir / "sope_diffuser_latest.pt"
                 _save_checkpoint(
@@ -495,6 +599,7 @@ def train_sope_with_loaders(
                     cfg_dataset,
                     cfg_training,
                     stats,
+                    diffuser_kind,
                 )
 
             if max_steps and step >= max_steps:
@@ -506,8 +611,11 @@ def train_sope_with_loaders(
 
 def train_sope(
     cfg_dataset: RolloutChunkDatasetConfig,
-    cfg_diffusion: SopeDiffusionConfig,
+    cfg_diffusion: Any,
     cfg_training: TrainingConfig,
+    diffuser_cls: Optional[type[Any]] = None,
+    cross_validate_fn: Optional[Callable[[Any, Any], None]] = None,
+    diffuser_kind: str = "sope",
 ) -> None:
     from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
 
@@ -555,6 +663,9 @@ def train_sope(
         stats=stats,
         train_data_refs=train_paths,
         eval_data_refs=eval_paths,
+        diffuser_cls=diffuser_cls,
+        cross_validate_fn=cross_validate_fn,
+        diffuser_kind=diffuser_kind,
     )
 
 
@@ -565,7 +676,7 @@ def train_reward(*args, **kwargs) -> None:
 
 def train(
     cfg_dataset: RolloutChunkDatasetConfig,
-    cfg_diffusion: SopeDiffusionConfig,
+    cfg_diffusion: Any,
     cfg_training: TrainingConfig,
 ) -> None:
     train_sope(

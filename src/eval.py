@@ -17,14 +17,35 @@ if TYPE_CHECKING:
 NP_FLOAT = np.float32
 
 
-def _tracks_only_eef_pos(diffuser: SopeDiffuser) -> bool:
+def _call_loss(
+    diffuser: Any,
+    batch_t: dict[str, torch.Tensor],
+    *,
+    compute_batch_rmse: bool = False,
+) -> Any:
+    try:
+        return diffuser.loss(batch_t, compute_batch_rmse=compute_batch_rmse)
+    except TypeError as exc:
+        if "compute_batch_rmse" not in str(exc):
+            raise
+        return diffuser.loss(batch_t)
+
+
+def _uses_inpainting_prefix(diffuser: Any) -> bool:
+    return (
+        getattr(diffuser.cfg, "conditioning_mode", "prefix_states") != "none"
+        and getattr(diffuser.cfg, "conditioning_style", "inpainting") == "inpainting"
+    )
+
+
+def _tracks_only_eef_pos(diffuser: Any) -> bool:
     return (
         int(diffuser.state_dim) == 3
         and getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none"
     )
 
 
-def _resolve_eval_eef_pos_slice(diffuser: SopeDiffuser) -> Optional[slice]:
+def _resolve_eval_eef_pos_slice(diffuser: Any) -> Optional[slice]:
     if _tracks_only_eef_pos(diffuser):
         return slice(0, 3)
     if diffuser.state_dim < 13:
@@ -132,13 +153,25 @@ def load_diffusion_checkpoint(
     device: Optional[str] = None,
     policy: Optional[Any] = None,
     behavior_policy: Optional[Any] = None,
-) -> tuple[SopeDiffuser, dict[str, Any]]:
-    from src.sope_diffuser import NormalizationStats, SopeDiffuser, SopeDiffusionConfig
+) -> tuple[Any, dict[str, Any]]:
+    from src.sope_diffuser import NormalizationStats
 
     checkpoint_path = Path(checkpoint_path)
     payload = torch.load(str(checkpoint_path), map_location="cpu")
+    diffuser_kind = str(payload.get("diffuser_kind", "sope"))
+    if diffuser_kind == "sope":
+        from src.sope_diffuser import SopeDiffuser, SopeDiffusionConfig
 
-    cfg_diffusion = SopeDiffusionConfig(**payload["diffusion_config"])
+        diffuser_cls = SopeDiffuser
+        cfg_diffusion = SopeDiffusionConfig(**payload["diffusion_config"])
+    elif diffuser_kind == "film":
+        from src.diffusion import FilmDiffuser, FilmDiffusionConfig
+
+        diffuser_cls = FilmDiffuser
+        cfg_diffusion = FilmDiffusionConfig(**payload["diffusion_config"])
+    else:
+        raise ValueError(f"Unknown diffuser_kind={diffuser_kind!r} in checkpoint.")
+
     stats_payload = payload.get("normalization_stats")
     stats = None
     if stats_payload is not None:
@@ -147,7 +180,7 @@ def load_diffusion_checkpoint(
             std=np.asarray(stats_payload["std"], dtype=NP_FLOAT),
         )
 
-    diffuser = SopeDiffuser(
+    diffuser = diffuser_cls(
         cfg=cfg_diffusion,
         normalization_stats=stats,
         device=device or resolve_device(prefer_cuda=True),
@@ -160,7 +193,7 @@ def load_diffusion_checkpoint(
 
 
 def _build_gt_future_chunk(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     batch: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
     if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
@@ -175,7 +208,7 @@ def _build_gt_future_chunk(
 
 
 def _build_persistence_baseline_chunk(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     batch: dict[str, torch.Tensor],
     *,
     normalized: bool,
@@ -193,7 +226,7 @@ def _build_persistence_baseline_chunk(
 
 
 def _sample_future_chunk_normalized(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     batch: dict[str, torch.Tensor],
     *,
     guided: bool = False,
@@ -214,7 +247,9 @@ def _sample_future_chunk_normalized(
     )
     if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
         return sample.trajectories
-    return sample.trajectories[:, diffuser.cfg.frame_stack :, :]
+    if _uses_inpainting_prefix(diffuser):
+        return sample.trajectories[:, diffuser.cfg.frame_stack :, :]
+    return sample.trajectories
 
 
 def _finalize_chunk_metrics(metrics: RMSEMetrics) -> RMSEMetrics:
@@ -259,7 +294,7 @@ def _finalize_chunk_metrics(metrics: RMSEMetrics) -> RMSEMetrics:
 
 
 def evaluate_diffusion_chunk_mse(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     loader: torch.utils.data.DataLoader,
     *,
     device: Optional[str] = None,
@@ -404,7 +439,7 @@ def evaluate_diffusion_chunk_mse(
 """ For evaluating sope chunk diffusion during training """
 
 def evaluate_sope(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     loader: torch.utils.data.DataLoader,
     device: torch.device,
     *,
@@ -419,16 +454,33 @@ def evaluate_sope(
     diffuser.diffusion.eval()
     loss_sum = 0.0
     batches = 0
+    last_batch_info: dict[str, float] = {}
     with torch.no_grad():
-        for batch in loader:
+        total_batches = len(loader)
+        for batch_idx, batch in enumerate(loader):
             batch_t = {
                 key: value.to(device) if torch.is_tensor(value) else value
                 for key, value in batch.items()
             }
-            loss_out = diffuser.loss(batch_t)
-            loss = loss_out[0] if isinstance(loss_out, tuple) else loss_out
+            loss_out = _call_loss(
+                diffuser,
+                batch_t,
+                compute_batch_rmse=(batch_idx == total_batches - 1),
+            )
+            if isinstance(loss_out, tuple):
+                loss, info = loss_out
+            else:
+                loss, info = loss_out, {}
             loss_sum += float(loss.item())
             batches += 1
+            if batch_idx == total_batches - 1:
+                last_batch_info = {}
+                if isinstance(info, dict):
+                    for key, value in info.items():
+                        if torch.is_tensor(value) and value.numel() == 1:
+                            last_batch_info[f"eval_last_batch/{key}"] = float(value.item())
+                        elif np.isscalar(value):
+                            last_batch_info[f"eval_last_batch/{key}"] = float(value)
 
     unguided_chunk_eval, _ = evaluate_diffusion_chunk_mse(
         diffuser,
@@ -450,6 +502,7 @@ def evaluate_sope(
         metadata={
             "evaluation_type": "chunk",
             "primary_metric_key": primary_metric_key,
+            "eval_last_batch": last_batch_info or None,
         },
     )
     diffuser.diffusion.train()
@@ -469,6 +522,7 @@ def evaluate_sope(
         summary_metrics = _build_eval_summary_metrics(report)
         summary_metrics["eval/epoch"] = float(epoch) if epoch is not None else float("nan")
         summary_metrics["eval/step"] = float(step) if step is not None else float("nan")
+        summary_metrics.update(last_batch_info)
         run.log(summary_metrics, step=step)
 
     return report
@@ -685,7 +739,7 @@ def evaluate_saved_diffusion_chunk_mse(
 
 """ For autoregressively generating full trajectories from sope chunk diffusion """
 def generate_full_trajectory(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     initial_states: torch.Tensor,
     *,
     max_length: int,
@@ -722,7 +776,10 @@ def generate_full_trajectory(
     total_generated = 0
     while total_generated < max_length:
         steps_to_add = min(chunk_horizon, max_length - total_generated)
-        cond = {t: cond_states[:, t, :] for t in range(frame_stack)}
+        if _uses_inpainting_prefix(diffuser):
+            cond = {t: cond_states[:, t, :] for t in range(frame_stack)}
+        else:
+            cond = cond_states.reshape(batch_size, -1)
         sample = diffuser.diffusion.conditional_sample(
             shape=(batch_size, total_horizon, diffuser.transition_dim),
             cond=cond,
@@ -731,8 +788,12 @@ def generate_full_trajectory(
             **guidance_kw,
         )
         chunk = diffuser.unnormalizer(sample.trajectories)
-        gen_states = chunk[:, frame_stack:, : diffuser.state_dim]
-        gen_actions = chunk[:, frame_stack:, diffuser.state_dim :]
+        if _uses_inpainting_prefix(diffuser):
+            gen_states = chunk[:, frame_stack:, : diffuser.state_dim]
+            gen_actions = chunk[:, frame_stack:, diffuser.state_dim :]
+        else:
+            gen_states = chunk[:, :, : diffuser.state_dim]
+            gen_actions = chunk[:, :, diffuser.state_dim :]
 
         t_end = total_generated + steps_to_add
         all_states[:, total_generated:t_end, :] = (
@@ -791,7 +852,7 @@ def trajectory_state_error(
 
 
 def evaluate_diffusion_trajectory_state_error(
-    diffuser: SopeDiffuser,
+    diffuser: Any,
     trajectories: Sequence[RolloutLatentTrajectory],
     *,
     evaluate_guided: bool = True,

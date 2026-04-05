@@ -221,6 +221,91 @@ For the current robomimic debugging problem, this means that a run can have a
 reasonable DDPM loss under `predict_epsilon=True` while still producing worse
 sample-space RMSE than `predict_epsilon=False`.
 
+### 1.3.1. Why `predict_epsilon` Can Have Worse Sample MSE
+
+It is tempting to say the two formulations should behave the same because they
+are mathematically equivalent. That statement is only true at the level of an
+exact optimum:
+
+- infinite data
+- sufficient model capacity
+- exact optimization
+- exact recovery of one target from the other
+
+Those conditions do not hold in the current robomimic chunk-diffusion setup.
+
+The practical issue is target mismatch.
+
+With `predict_epsilon=True`, the model is trained on
+
+$$\begin{align}
+\mathcal{L}_{\epsilon}
+=
+\mathbb{E}
+\left[
+\left\|
+\epsilon - \hat{\epsilon}_\theta
+\right\|_2^2
+\right]
+\end{align}$$
+
+but the quantity later used by the sampler is
+
+$$\begin{align}
+\hat{x}_0
+=
+\frac{x_t - \sqrt{1-\bar{\alpha}_t}\,\hat{\epsilon}_\theta}
+{\sqrt{\bar{\alpha}_t}}
+\end{align}$$
+
+So the sampler does not directly consume the supervised target. It consumes a
+transformed version of the model prediction.
+
+This means:
+
+$$\begin{align}
+\hat{\epsilon}_\theta \approx \epsilon
+\not\Rightarrow
+\hat{x}_0 \approx x_0
+\text{ with equal error across all } t
+\end{align}$$
+
+because the map from $\hat{\epsilon}_\theta$ to $\hat{x}_0$ depends on the
+noise schedule. In particular, when $\bar{\alpha}_t$ is small, the conversion
+from predicted noise to clean sample can magnify the effect of prediction error.
+
+By contrast, with `predict_epsilon=False`, the loss directly supervises the
+quantity that the reverse process uses:
+
+$$\begin{align}
+\mathcal{L}_{x_0}
+=
+\mathbb{E}
+\left[
+\left\|
+x_0 - \hat{x}_{0,\theta}
+\right\|_2^2
+\right]
+\end{align}$$
+
+and the sampler then plugs $\hat{x}_{0,\theta}$ directly into the posterior.
+
+So the two formulations are:
+
+- equivalent as probabilistic parameterizations of the same DDPM family
+- not equivalent as finite-sample optimization problems
+
+This gap can become more visible when:
+
+- the downstream metric is chunk-space MSE rather than noise-space MSE
+- the model is trained with conditioning
+- the loss is masked or reweighted across coordinates or timesteps
+- the data regime is relatively small or structured
+
+That is why, in practice, `predict_epsilon=True` can produce worse chunk RMSE
+than `predict_epsilon=False` even though the underlying DDPM mathematics is
+consistent in both cases.
+
 ### 1.4. Generation Pipeline Difference
 
 The reverse-generation loop is structurally the same in both parameterizations:
