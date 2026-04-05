@@ -532,7 +532,7 @@ class FilmDiffusionConfig:
         return self.chunk_horizon
 
 
-    class FilmDiffuser:
+class FilmDiffuser:
     """FiLM-conditioned chunk diffusion wrapper using robomimic's ConditionalUnet1D."""
 
     def __init__(
