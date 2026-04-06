@@ -16,6 +16,7 @@ This file is a reusable template for research-oriented codebases. It keeps the s
 - The note should link directly to the relevant code, summarize the behavior before and after the change, and record any important assumptions, equations, ablations, or implementation caveats.
 - Prefer small, focused documents over broad narrative writeups. One change or subsystem per file is usually the right granularity.
 - If the repository uses numbered docs, keep the numbering monotonic, for example `1_overview.md`, `2_training.md`, `3_sampling.md`.
+- For `.md` files in `docs/`, number second- and third-level headings consistently, for example `## 1. Section` and `### 1.1 Subsection`.
 - If a change affects experimental behavior, document what should be re-run to validate it.
 
 ### 2.2. Equation formatting

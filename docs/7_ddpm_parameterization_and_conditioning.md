@@ -93,7 +93,7 @@ x_{t-1};
 This is the quantity implemented by `q_posterior(...)` in
 [third_party/sope/opelab/core/baselines/diffusion/diffusion.py](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py).
 
-### 1.1. Predict Noise
+### 1.1 Predict Noise
 
 With `predict_epsilon=True`, the network predicts $\epsilon$.
 
@@ -140,7 +140,7 @@ Concretely:
 - [third_party/sope/opelab/core/baselines/diffusion/diffusion.py](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py#L356)
 - [third_party/sope/opelab/core/baselines/diffusion/diffusion.py](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py#L509)
 
-### 1.2. Predict Clean Sample
+### 1.2 Predict Clean Sample
 
 With `predict_epsilon=False`, the network predicts $x_0$ directly.
 
@@ -176,7 +176,7 @@ In the same SOPE code path:
 
 This changes the supervised target without changing the overall DDPM family.
 
-### 1.3. Why The Two Modes Can Behave Differently
+### 1.3 Why The Two Modes Can Behave Differently
 
 The two parameterizations are mathematically related, but they are not
 optimization-equivalent for a finite model trained with finite data.
@@ -223,7 +223,7 @@ For the current robomimic debugging problem, this means that a run can have a
 reasonable DDPM loss under `predict_epsilon=True` while still producing worse
 sample-space RMSE than `predict_epsilon=False`.
 
-### 1.3.1. Why `predict_epsilon` Can Have Worse Sample MSE
+### 1.4 Why `predict_epsilon` Can Have Worse Sample MSE
 
 It is tempting to say the two formulations should behave the same because they
 are mathematically equivalent. That statement is only true at the level of an
@@ -308,7 +308,7 @@ That is why, in practice, `predict_epsilon=True` can produce worse chunk RMSE
 than `predict_epsilon=False` even though the underlying DDPM mathematics is
 consistent in both cases.
 
-### 1.4. Generation Pipeline Difference
+### 1.5 Generation Pipeline Difference
 
 The reverse-generation loop is structurally the same in both parameterizations:
 
@@ -413,7 +413,7 @@ In SOPE this branch is implemented in
 
 ## 2. SOPE Conditioning Versus Robomimic Conditioning
 
-### 2.1. SOPE Uses In-Painting-Style Conditioning
+### 2.1 SOPE Uses In-Painting-Style Conditioning
 
 SOPE's diffusion model conditions by explicitly pinning known state values at
 selected timesteps. The helper `apply_conditioning(...)` is used during both
@@ -430,7 +430,7 @@ This style is closest to trajectory in-painting:
 In the older local wrapper, this was exposed through `make_cond(...)` and
 prefix-state construction in the removed `src/sope_diffuser.py` path.
 
-### 2.2. Robomimic Diffusion Policy Uses Explicit Context Conditioning
+### 2.2 Robomimic Diffusion Policy Uses Explicit Context Conditioning
 
 Robomimic's diffusion policy backbone does not use SOPE-style in-painting on
 the denoised sequence.
@@ -447,7 +447,7 @@ The relevant path is:
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py#L193)
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py#L213)
 
-### 2.3. The Robomimic Backbone Is FiLM-Style
+### 2.3 The Robomimic Backbone Is FiLM-Style
 
 Inside
 [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py),
@@ -469,7 +469,7 @@ This is explicit context conditioning, not in-painting.
 The repository now standardizes on the FiLM-conditioned robomimic backbone in
 [src/diffusion.py](../src/diffusion.py).
 
-### 3.1. Canonical API
+### 3.1 Canonical API
 
 The canonical public surface is now:
 
@@ -487,7 +487,7 @@ Training and evaluation now use that single API directly:
 - the training scripts import `SopeDiffusionConfig` from
   [src/diffusion.py](../src/diffusion.py)
 
-### 3.2. Why This Path Won
+### 3.2 Why This Path Won
 
 The canonical path:
 
@@ -501,7 +501,7 @@ The canonical path:
 So the active design changes the conditioning path and denoiser backbone, not
 the outer DDPM loop.
 
-### 3.3. Compatibility Decision
+### 3.3 Compatibility Decision
 
 This consolidation intentionally breaks compatibility with:
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import math
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -103,6 +103,30 @@ def _save_checkpoint(
     torch.save(payload, str(path))
 
 
+def _save_reward_checkpoint(
+    path: Path,
+    reward_predictor: Any,
+    epoch: int,
+    step: int,
+    cfg_reward: Any,
+    cfg_dataset: Any,
+    cfg_training: TrainingConfig,
+    input_stats: Optional["DatasetNormalizationStats"] = None,
+) -> None:
+    payload = {
+        "reward_state_dict": reward_predictor.state_dict(),
+        "epoch": int(epoch),
+        "step": int(step),
+        "reward_config": asdict(cfg_reward),
+        "dataset_config": asdict(cfg_dataset),
+        "training_config": _serialize_training_config(cfg_training),
+        "input_normalization_stats": (
+            None if input_stats is None else {"mean": input_stats.mean, "std": input_stats.std}
+        ),
+    }
+    torch.save(payload, str(path))
+
+
 def _save_configs(
     path: Path,
     cfg_diffusion: Any,
@@ -111,6 +135,20 @@ def _save_configs(
 ) -> None:
     payload = {
         "diffusion_config": asdict(cfg_diffusion),
+        "dataset_config": asdict(cfg_dataset),
+        "training_config": _serialize_training_config(cfg_training),
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _save_reward_configs(
+    path: Path,
+    cfg_reward: Any,
+    cfg_dataset: Any,
+    cfg_training: TrainingConfig,
+) -> None:
+    payload = {
+        "reward_config": asdict(cfg_reward),
         "dataset_config": asdict(cfg_dataset),
         "training_config": _serialize_training_config(cfg_training),
     }
@@ -157,6 +195,10 @@ def _format_train_info_metrics(info: Any) -> dict[str, float]:
         else:
             formatted[f"train/{key}"] = value
     return formatted
+
+
+def _format_reward_info_metrics(info: Any) -> dict[str, float]:
+    return {f"reward_train/{key}": value for key, value in _flatten_scalar_metrics(info).items()}
 
 
 def _call_loss(
@@ -247,28 +289,268 @@ def _stringify_refs(refs: Optional[Sequence[Any]]) -> list[str]:
     return [str(ref) for ref in refs]
 
 
-def train_sope_with_loaders(
-    *,
-    cfg_dataset: Any,
-    cfg_diffusion: Any,
+def _resolve_training_device(
     cfg_training: TrainingConfig,
-    loader: torch.utils.data.DataLoader,
-    eval_loader: Optional[torch.utils.data.DataLoader],
-    stats: Optional["DatasetNormalizationStats"],
-    train_data_refs: Optional[Sequence[Any]] = None,
-    eval_data_refs: Optional[Sequence[Any]] = None,
-) -> None:
-    from src.diffusion import SopeDiffuser, cross_validate_configs
-    from src.eval import evaluate_sope
-    import wandb
-    # _patch_wandb_sentry_deprecations()
-
-    set_global_seed(cfg_training.seed)
-
+) -> tuple[str, torch.device]:
     device_str = cfg_training.device or resolve_device(
         prefer_cuda=cfg_training.prefer_cuda
     )
-    device = torch.device(device_str)
+    return device_str, torch.device(device_str)
+
+
+def _resolve_checkpoint_dir(cfg_training: TrainingConfig) -> Optional[Path]:
+    return Path(cfg_training.checkpoint_dir) if cfg_training.checkpoint_dir else None
+
+
+def derive_phase_training_config(
+    cfg_training: TrainingConfig,
+    *,
+    epochs: Optional[int] = None,
+    batch_size: Optional[int] = None,
+    lr: Optional[float] = None,
+    wandb_run_name_suffix: Optional[str] = None,
+    wandb_tags: Sequence[str] = (),
+) -> TrainingConfig:
+    """Build a phase-local TrainingConfig for diffusion or reward training.
+
+    Diffusion consumes `cfg_training.lr` when constructing its optimizer.
+    Reward training uses `cfg_training.epochs` and `cfg_training.batch_size`,
+    but its optimizer LR comes from `RewardPredictorConfig.lr` instead.
+    """
+    run_name = cfg_training.wandb_run_name
+    if wandb_run_name_suffix and run_name is not None:
+        run_name = f"{run_name}_{wandb_run_name_suffix}"
+
+    return replace(
+        cfg_training,
+        epochs=cfg_training.epochs if epochs is None else epochs,
+        batch_size=cfg_training.batch_size if batch_size is None else batch_size,
+        lr=cfg_training.lr if lr is None else lr,
+        wandb_run_name=run_name,
+        wandb_tags=cfg_training.wandb_tags + tuple(wandb_tags),
+    )
+
+
+def _build_wandb_training_payload(
+    cfg_training: TrainingConfig,
+    *,
+    checkpoint_dir: Optional[Path],
+    train_data_refs: Optional[Sequence[Any]] = None,
+    eval_data_refs: Optional[Sequence[Any]] = None,
+    save_every: Optional[int] = None,
+    eval_every: Optional[int] = None,
+) -> dict[str, Any]:
+    return {
+        **asdict(cfg_training),
+        "data": [str(path) for path in _as_paths(cfg_training.data)],
+        "train_data_refs": _stringify_refs(train_data_refs),
+        "eval_data_refs": _stringify_refs(eval_data_refs),
+        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else None,
+        "save_every": save_every,
+        "eval_every": eval_every,
+    }
+
+
+def _collect_optimizer_parameters(
+    optimizer: torch.optim.Optimizer,
+) -> list[torch.Tensor]:
+    params: list[torch.Tensor] = []
+    seen: set[int] = set()
+    for group in optimizer.param_groups:
+        for param in group.get("params", []):
+            if not torch.is_tensor(param):
+                continue
+            if not param.requires_grad:
+                continue
+            param_id = id(param)
+            if param_id in seen:
+                continue
+            seen.add(param_id)
+            params.append(param)
+    return params
+
+
+def _set_model_training_mode(model: Any, training: bool) -> None:
+    train_fn = getattr(model, "train", None)
+    if callable(train_fn):
+        train_fn(training)
+        return
+
+    diffusion = getattr(model, "diffusion", None)
+    diffusion_train_fn = getattr(diffusion, "train", None)
+    if callable(diffusion_train_fn):
+        diffusion_train_fn(training)
+
+
+@dataclass(frozen=True)
+class TrainLoopCallbacks:
+    name: str
+    build_optimizer: Callable[[Any, TrainingConfig], torch.optim.Optimizer]
+    compute_loss: Callable[
+        [Any, Dict[str, torch.Tensor], int, int, int, Optional[int]],
+        tuple[torch.Tensor, dict[str, Any]],
+    ]
+    format_batch_metrics: Callable[[dict[str, Any], int, int, float], dict[str, float]]
+    evaluate: Optional[Callable[..., Optional[dict[str, float]]]] = None
+    save_configs: Optional[Callable[[Path], None]] = None
+    save_checkpoint: Optional[Callable[[Path, Any, int, int], None]] = None
+    checkpoint_stem: str = "model"
+    epoch_avg_metric_key: str = "train_epoch_avg/loss"
+    wandb_config: Optional[dict[str, Any]] = None
+
+
+def train_general(
+    *,
+    model: Any,
+    loader: torch.utils.data.DataLoader,
+    cfg_training: TrainingConfig,
+    callbacks: TrainLoopCallbacks,
+    eval_loader: Optional[torch.utils.data.DataLoader] = None,
+) -> None:
+    import wandb
+
+    set_global_seed(cfg_training.seed)
+
+    _, device = _resolve_training_device(cfg_training)
+    optimizer = callbacks.build_optimizer(model, cfg_training)
+    steps_per_epoch = len(loader)
+    max_steps = (
+        cfg_training.max_steps
+        if cfg_training.max_steps and cfg_training.max_steps > 0
+        else None
+    )
+    total_training_steps = (
+        min(cfg_training.epochs * steps_per_epoch, max_steps)
+        if max_steps
+        else cfg_training.epochs * steps_per_epoch
+    )
+    scheduler = _build_lr_scheduler(
+        optimizer=optimizer,
+        cfg_training=cfg_training,
+        total_steps=total_training_steps,
+    )
+    save_every = _resolve_save_every(cfg_training)
+    eval_every = _resolve_eval_every(cfg_training)
+
+    checkpoint_dir = _resolve_checkpoint_dir(cfg_training)
+    if checkpoint_dir is not None:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if callbacks.save_configs is not None:
+            callbacks.save_configs(checkpoint_dir)
+
+    run = None
+    if cfg_training.wandb_project:
+        run = wandb.init(
+            project=cfg_training.wandb_project,
+            entity=cfg_training.wandb_entity,
+            name=cfg_training.wandb_run_name,
+            group=cfg_training.wandb_group,
+            mode=cfg_training.wandb_mode,
+            tags=list(cfg_training.wandb_tags),
+            config=callbacks.wandb_config or {},
+        )
+
+    step = 0
+    epoch_iterator = tqdm(
+        range(1, cfg_training.epochs + 1), desc=callbacks.name, unit="epoch"
+    )
+    try:
+        for epoch in epoch_iterator:
+            _set_model_training_mode(model, True)
+            epoch_loss_sum = 0.0
+            epoch_batches = 0
+
+            for batch_idx, batch in enumerate(loader):
+                step += 1
+                batch_t = _to_device(batch, device)
+                loss, info = callbacks.compute_loss(
+                    model,
+                    batch_t,
+                    batch_idx,
+                    step,
+                    steps_per_epoch,
+                    max_steps,
+                )
+
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                if cfg_training.grad_clip > 0:
+                    params = _collect_optimizer_parameters(optimizer)
+                    if params:
+                        torch.nn.utils.clip_grad_norm_(params, cfg_training.grad_clip)
+                optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
+
+                loss_value = float(loss.item())
+                epoch_loss_sum += loss_value
+                epoch_batches += 1
+                current_lr = float(optimizer.param_groups[0]["lr"])
+
+                if run is not None:
+                    batch_info = dict(info)
+                    batch_info["loss"] = loss_value
+                    batch_metrics = callbacks.format_batch_metrics(
+                        batch_info,
+                        epoch,
+                        step,
+                        current_lr,
+                    )
+                    if batch_metrics:
+                        run.log(batch_metrics, step=step)
+
+                if max_steps and step >= max_steps:
+                    break
+
+            avg_epoch_loss = epoch_loss_sum / max(epoch_batches, 1)
+            current_lr = float(optimizer.param_groups[0]["lr"])
+            epoch_iterator.set_postfix(
+                loss=f"{avg_epoch_loss:.2e}", lr=f"{current_lr:.2e}"
+            )
+
+            if run is not None:
+                run.log({callbacks.epoch_avg_metric_key: avg_epoch_loss}, step=step)
+
+            eval_now = eval_loader is not None and eval_every is not None and (
+                epoch % eval_every == 0 or epoch == cfg_training.epochs
+            )
+            save_now = checkpoint_dir is not None and callbacks.save_checkpoint is not None and (
+                epoch % save_every == 0 or epoch == cfg_training.epochs
+            )
+
+            if eval_now and callbacks.evaluate is not None:
+                eval_metrics = callbacks.evaluate(
+                    model,
+                    eval_loader,
+                    device,
+                    epoch,
+                    step,
+                    run,
+                    epoch_iterator,
+                    avg_epoch_loss,
+                    current_lr,
+                )
+                if run is not None and eval_metrics:
+                    run.log(eval_metrics, step=step)
+
+            if save_now:
+                ckpt_path = checkpoint_dir / f"{callbacks.checkpoint_stem}_epoch_{epoch:04d}.pt"
+                callbacks.save_checkpoint(ckpt_path, model, epoch, step)
+                latest_path = checkpoint_dir / f"{callbacks.checkpoint_stem}_latest.pt"
+                callbacks.save_checkpoint(latest_path, model, epoch, step)
+
+            if max_steps and step >= max_steps:
+                break
+    finally:
+        if run is not None:
+            run.finish()
+
+
+def _validate_sope_training_inputs(
+    cfg_dataset: Any,
+    cfg_diffusion: Any,
+) -> None:
+    from src.diffusion import cross_validate_configs
 
     if getattr(cfg_dataset, "source", None) == "obs":
         raise ValueError(
@@ -297,186 +579,176 @@ def train_sope_with_loaders(
 
     cross_validate_configs(cfg_dataset, cfg_diffusion)
 
-    # _patch_torch_optimizer_for_missing_sympy()
-    diffuser = SopeDiffuser(
-        cfg=cfg_diffusion,
-        normalization_stats=stats,
-        device=device_str,
-    )
-    optimizer = torch.optim.Adam(
-        diffuser.diffusion.parameters(),
-        lr=cfg_training.lr,
-        weight_decay=cfg_training.weight_decay,
-    )
-    steps_per_epoch = len(loader)
-    max_steps = (
-        cfg_training.max_steps
-        if cfg_training.max_steps and cfg_training.max_steps > 0
-        else None
-    )
-    total_training_steps = (
-        min(cfg_training.epochs * steps_per_epoch, max_steps)
-        if max_steps
-        else cfg_training.epochs * steps_per_epoch
-    )
-    scheduler = _build_lr_scheduler(
-        optimizer=optimizer,
-        cfg_training=cfg_training,
-        total_steps=total_training_steps,
-    )
+
+def _make_sope_train_callbacks(
+    *,
+    cfg_dataset: Any,
+    cfg_diffusion: Any,
+    cfg_training: TrainingConfig,
+    stats: Optional["DatasetNormalizationStats"],
+    train_data_refs: Optional[Sequence[Any]] = None,
+    eval_data_refs: Optional[Sequence[Any]] = None,
+) -> TrainLoopCallbacks:
+    from src.eval import evaluate_sope
+
+    checkpoint_dir = _resolve_checkpoint_dir(cfg_training)
     save_every = _resolve_save_every(cfg_training)
     eval_every = _resolve_eval_every(cfg_training)
 
-    checkpoint_dir = (
-        Path(cfg_training.checkpoint_dir) if cfg_training.checkpoint_dir else None
-    )
-    if checkpoint_dir is not None:
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    def _build_optimizer(
+        diffuser: Any,
+        training_cfg: TrainingConfig,
+    ) -> torch.optim.Optimizer:
+        return torch.optim.Adam(
+            diffuser.diffusion.parameters(),
+            lr=training_cfg.lr,
+            weight_decay=training_cfg.weight_decay,
+        )
+
+    def _compute_loss(
+        diffuser: Any,
+        batch_t: Dict[str, torch.Tensor],
+        batch_idx: int,
+        step: int,
+        steps_per_epoch: int,
+        max_steps: Optional[int],
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        compute_batch_rmse = (
+            batch_idx == (steps_per_epoch - 1)
+            or (max_steps is not None and step >= max_steps)
+        )
+        loss_out = _call_loss(
+            diffuser=diffuser,
+            batch_t=batch_t,
+            compute_batch_rmse=compute_batch_rmse,
+        )
+        if isinstance(loss_out, tuple):
+            return loss_out
+        return loss_out, {}
+
+    def _format_batch_metrics(
+        info: dict[str, Any],
+        epoch: int,
+        step: int,
+        lr: float,
+    ) -> dict[str, float]:
+        metrics = {
+            "train/lr": lr,
+            "train/epoch": float(epoch),
+            "train/step": float(step),
+        }
+        metrics.update(_format_train_info_metrics(info))
+        return metrics
+
+    def _evaluate(
+        diffuser: Any,
+        eval_loader: torch.utils.data.DataLoader,
+        device: torch.device,
+        epoch: int,
+        step: int,
+        run: Optional[Any],
+        epoch_iterator: Optional[Any],
+        avg_epoch_loss: float,
+        current_lr: float,
+    ) -> Optional[dict[str, float]]:
+        evaluate_sope(
+            diffuser,
+            eval_loader,
+            device,
+            epoch=epoch,
+            step=step,
+            run=run,
+            epoch_iterator=epoch_iterator,
+            avg_epoch_loss=avg_epoch_loss,
+            current_lr=current_lr,
+        )
+        return None
+
+    def _save_configs_to_dir(checkpoint_root: Path) -> None:
         _save_configs(
-            checkpoint_dir / "configs.json",
+            checkpoint_root / "configs.json",
             cfg_diffusion,
             cfg_dataset,
             cfg_training,
         )
 
-    run = None
-    if cfg_training.wandb_project:
-        run = wandb.init(
-            project=cfg_training.wandb_project,
-            entity=cfg_training.wandb_entity,
-            name=cfg_training.wandb_run_name,
-            group=cfg_training.wandb_group,
-            mode=cfg_training.wandb_mode,
-            tags=list(cfg_training.wandb_tags),
-            config={
-                "dataset": asdict(cfg_dataset),
-                "diffusion": asdict(cfg_diffusion),
-                "training": {
-                    **asdict(cfg_training),
-                    "data": [str(path) for path in _as_paths(cfg_training.data)],
-                    "train_data_refs": _stringify_refs(train_data_refs),
-                    "eval_data_refs": _stringify_refs(eval_data_refs),
-                    "checkpoint_dir": (
-                        str(checkpoint_dir) if checkpoint_dir is not None else None
-                    ),
-                    "save_every": save_every,
-                    "eval_every": eval_every,
-                },
-            },
+    def _save_diffusion_checkpoint(
+        path: Path,
+        diffuser: Any,
+        epoch: int,
+        step: int,
+    ) -> None:
+        _save_checkpoint(
+            path,
+            diffuser,
+            epoch,
+            step,
+            cfg_diffusion,
+            cfg_dataset,
+            cfg_training,
+            stats,
         )
 
-    step = 0
-    epoch_iterator = tqdm(
-        range(1, cfg_training.epochs + 1), desc="train_sope", unit="epoch"
+    return TrainLoopCallbacks(
+        name="train_sope",
+        build_optimizer=_build_optimizer,
+        compute_loss=_compute_loss,
+        format_batch_metrics=_format_batch_metrics,
+        evaluate=_evaluate,
+        save_configs=_save_configs_to_dir,
+        save_checkpoint=_save_diffusion_checkpoint,
+        checkpoint_stem="sope_diffuser",
+        epoch_avg_metric_key="train_epoch_avg/loss",
+        wandb_config={
+            "dataset": asdict(cfg_dataset),
+            "diffusion": asdict(cfg_diffusion),
+            "training": _build_wandb_training_payload(
+                cfg_training,
+                checkpoint_dir=checkpoint_dir,
+                train_data_refs=train_data_refs,
+                eval_data_refs=eval_data_refs,
+                save_every=save_every,
+                eval_every=eval_every,
+            ),
+        },
     )
-    try:
-        for epoch in epoch_iterator:
-            epoch_loss_sum = 0.0
-            epoch_batches = 0
 
-            for batch_idx, batch in enumerate(loader):
-                step += 1
-                batch_t = _to_device(batch, device)
-                compute_batch_rmse = (
-                    batch_idx == (steps_per_epoch - 1)
-                    or (max_steps is not None and step >= max_steps)
-                )
-                loss_out = _call_loss(
-                    diffuser=diffuser,
-                    batch_t=batch_t,
-                    compute_batch_rmse=compute_batch_rmse,
-                )
-                if isinstance(loss_out, tuple):
-                    loss, info = loss_out
-                else:
-                    loss, info = loss_out, {}
 
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                if cfg_training.grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        diffuser.diffusion.parameters(), cfg_training.grad_clip
-                    )
-                optimizer.step()
-                if scheduler is not None:
-                    scheduler.step()
+def train_sope_with_loaders(
+    *,
+    cfg_dataset: Any,
+    cfg_diffusion: Any,
+    cfg_training: TrainingConfig,
+    loader: torch.utils.data.DataLoader,
+    eval_loader: Optional[torch.utils.data.DataLoader],
+    stats: Optional["DatasetNormalizationStats"],
+    train_data_refs: Optional[Sequence[Any]] = None,
+    eval_data_refs: Optional[Sequence[Any]] = None,
+) -> None:
+    from src.diffusion import SopeDiffuser
 
-                loss_value = float(loss.item())
-                epoch_loss_sum += loss_value
-                epoch_batches += 1
-                current_lr = float(optimizer.param_groups[0]["lr"])
-
-                if run is not None:
-                    batch_metrics = {
-                        "train/loss": loss_value,
-                        "train/lr": current_lr,
-                        "train/epoch": float(epoch),
-                        "train/step": float(step),
-                    }
-                    batch_metrics.update(_format_train_info_metrics(info))
-                    run.log(batch_metrics, step=step)
-
-                if max_steps and step >= max_steps:
-                    break
-
-            avg_epoch_loss = epoch_loss_sum / max(epoch_batches, 1)
-            current_lr = float(optimizer.param_groups[0]["lr"])
-            epoch_iterator.set_postfix(
-                loss=f"{avg_epoch_loss:.2e}", lr=f"{current_lr:.2e}"
-            )
-
-            if run is not None:
-                run.log({"train_epoch_avg/loss": avg_epoch_loss}, step=step)
-
-            eval_now = eval_loader is not None and eval_every is not None and (
-                epoch % eval_every == 0 or epoch == cfg_training.epochs
-            )
-            save_now = checkpoint_dir is not None and (
-                epoch % save_every == 0 or epoch == cfg_training.epochs
-            )
-
-            if eval_now:
-                evaluate_sope(
-                    diffuser,
-                    eval_loader,
-                    device,
-                    epoch=epoch,
-                    step=step,
-                    run=run,
-                    epoch_iterator=epoch_iterator,
-                    avg_epoch_loss=avg_epoch_loss,
-                    current_lr=current_lr,
-                )
-
-            if save_now:
-                ckpt_path = checkpoint_dir / f"sope_diffuser_epoch_{epoch:04d}.pt"
-                _save_checkpoint(
-                    ckpt_path,
-                    diffuser,
-                    epoch,
-                    step,
-                    cfg_diffusion,
-                    cfg_dataset,
-                    cfg_training,
-                    stats,
-                )
-                latest_path = checkpoint_dir / "sope_diffuser_latest.pt"
-                _save_checkpoint(
-                    latest_path,
-                    diffuser,
-                    epoch,
-                    step,
-                    cfg_diffusion,
-                    cfg_dataset,
-                    cfg_training,
-                    stats,
-                )
-
-            if max_steps and step >= max_steps:
-                break
-    finally:
-        if run is not None:
-            run.finish()
+    _validate_sope_training_inputs(cfg_dataset, cfg_diffusion)
+    device_str, _ = _resolve_training_device(cfg_training)
+    diffuser = SopeDiffuser(
+        cfg=cfg_diffusion,
+        normalization_stats=stats,
+        device=device_str,
+    )
+    callbacks = _make_sope_train_callbacks(
+        cfg_dataset=cfg_dataset,
+        cfg_diffusion=cfg_diffusion,
+        cfg_training=cfg_training,
+        stats=stats,
+        train_data_refs=train_data_refs,
+        eval_data_refs=eval_data_refs,
+    )
+    train_general(
+        model=diffuser,
+        loader=loader,
+        cfg_training=cfg_training,
+        callbacks=callbacks,
+        eval_loader=eval_loader,
+    )
 
 
 def train_sope(
@@ -484,11 +756,10 @@ def train_sope(
     cfg_diffusion: Any,
     cfg_training: TrainingConfig,
 ) -> None:
+    """Train chunk diffusion with phase-local TrainingConfig epochs, batch size, and LR."""
     from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
 
-    device_str = cfg_training.device or resolve_device(
-        prefer_cuda=cfg_training.prefer_cuda
-    )
+    device_str, _ = _resolve_training_device(cfg_training)
 
     train_paths, eval_paths = _split_rollout_paths(
         paths=cfg_training.data,
@@ -533,28 +804,252 @@ def train_sope(
     )
 
 
-def train_reward(*args, **kwargs) -> None:
-    """Placeholder for future per-step reward predictor training."""
-    raise NotImplementedError("train_reward() is not implemented yet.")
-
-
-def train(
-    cfg_dataset: RolloutChunkDatasetConfig,
-    cfg_diffusion: Any,
-    cfg_training: TrainingConfig,
+def _validate_rewardpred_training_inputs(
+    cfg_dataset: Any,
+    cfg_reward: Any,
 ) -> None:
-    train_sope(
-        cfg_dataset=cfg_dataset,
-        cfg_diffusion=cfg_diffusion,
-        cfg_training=cfg_training,
+    if getattr(cfg_dataset, "source", None) != "latents":
+        raise ValueError(
+            "Reward training currently supports source='latents' only so it can use raw low-dim state inputs."
+        )
+    if bool(getattr(cfg_dataset, "normalize", False)):
+        raise ValueError("Reward training expects raw state/action inputs; set cfg_dataset.normalize=False.")
+
+    dataset_state_dim = getattr(cfg_dataset, "latents_dim", None)
+    if dataset_state_dim is None:
+        dataset_state_dim = getattr(cfg_dataset, "state_dim", None)
+    if dataset_state_dim is None:
+        raise AttributeError(
+            f"{type(cfg_dataset).__name__} must define latents_dim or state_dim."
+        )
+    dataset_action_dim = getattr(cfg_dataset, "action_dim", None)
+    if dataset_action_dim is None:
+        raise AttributeError(f"{type(cfg_dataset).__name__} must define action_dim.")
+    if int(dataset_state_dim) != int(cfg_reward.state_dim):
+        raise ValueError(
+            "Reward config mismatch: dataset state_dim must equal RewardPredictorConfig.state_dim "
+            f"({dataset_state_dim} != {cfg_reward.state_dim})."
+        )
+    if int(dataset_action_dim) != int(cfg_reward.action_dim):
+        raise ValueError(
+            "Reward config mismatch: dataset action_dim must equal RewardPredictorConfig.action_dim "
+            f"({dataset_action_dim} != {cfg_reward.action_dim})."
+        )
+
+
+def _make_rewardpred_train_callbacks(
+    *,
+    cfg_dataset: Any,
+    cfg_reward: Any,
+    cfg_training: TrainingConfig,
+    train_data_refs: Optional[Sequence[Any]] = None,
+    eval_data_refs: Optional[Sequence[Any]] = None,
+) -> TrainLoopCallbacks:
+    checkpoint_dir = _resolve_checkpoint_dir(cfg_training)
+    save_every = _resolve_save_every(cfg_training)
+    eval_every = _resolve_eval_every(cfg_training)
+
+    def _build_optimizer(
+        reward_predictor: Any,
+        training_cfg: TrainingConfig,
+    ) -> torch.optim.Optimizer:
+        del training_cfg
+        return torch.optim.Adam(
+            reward_predictor.parameters(),
+            lr=cfg_reward.lr,
+            weight_decay=cfg_reward.weight_decay,
+        )
+
+    def _compute_loss(
+        reward_predictor: Any,
+        batch_t: Dict[str, torch.Tensor],
+        batch_idx: int,
+        step: int,
+        steps_per_epoch: int,
+        max_steps: Optional[int],
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        del batch_idx, step, steps_per_epoch, max_steps
+        return reward_predictor.loss(batch_t)
+
+    def _format_batch_metrics(
+        info: dict[str, Any],
+        epoch: int,
+        step: int,
+        lr: float,
+    ) -> dict[str, float]:
+        metrics = {
+            "reward_train/lr": lr,
+            "reward_train/epoch": float(epoch),
+            "reward_train/step": float(step),
+        }
+        metrics.update(_format_reward_info_metrics(info))
+        return metrics
+
+    def _evaluate(
+        reward_predictor: Any,
+        eval_loader: torch.utils.data.DataLoader,
+        device: torch.device,
+        epoch: int,
+        step: int,
+        run: Optional[Any],
+        epoch_iterator: Optional[Any],
+        avg_epoch_loss: float,
+        current_lr: float,
+    ) -> Optional[dict[str, float]]:
+        del epoch, step, run, epoch_iterator, avg_epoch_loss, current_lr
+        from src.eval import _evaluate_reward_predictor
+
+        return _evaluate_reward_predictor(reward_predictor, eval_loader, device)
+
+    def _save_configs_to_dir(checkpoint_root: Path) -> None:
+        _save_reward_configs(
+            checkpoint_root / "reward_configs.json",
+            cfg_reward,
+            cfg_dataset,
+            cfg_training,
+        )
+
+    def _save_reward_predictor_checkpoint(
+        path: Path,
+        reward_predictor: Any,
+        epoch: int,
+        step: int,
+    ) -> None:
+        _save_reward_checkpoint(
+            path,
+            reward_predictor,
+            epoch,
+            step,
+            cfg_reward,
+            cfg_dataset,
+            cfg_training,
+            None,
+        )
+
+    return TrainLoopCallbacks(
+        name="train_rewardpred",
+        build_optimizer=_build_optimizer,
+        compute_loss=_compute_loss,
+        format_batch_metrics=_format_batch_metrics,
+        evaluate=_evaluate,
+        save_configs=_save_configs_to_dir,
+        save_checkpoint=_save_reward_predictor_checkpoint,
+        checkpoint_stem="sope_reward_predictor",
+        epoch_avg_metric_key="reward_train_epoch_avg/loss",
+        wandb_config={
+            "dataset": asdict(cfg_dataset),
+            "reward": asdict(cfg_reward),
+            "training": _build_wandb_training_payload(
+                cfg_training,
+                checkpoint_dir=checkpoint_dir,
+                train_data_refs=train_data_refs,
+                eval_data_refs=eval_data_refs,
+                save_every=save_every,
+                eval_every=eval_every,
+            ),
+        },
     )
 
 
+def train_rewardpred_with_loaders(
+    *,
+    cfg_dataset: Any,
+    cfg_reward: Any,
+    cfg_training: TrainingConfig,
+    loader: torch.utils.data.DataLoader,
+    eval_loader: Optional[torch.utils.data.DataLoader],
+    train_data_refs: Optional[Sequence[Any]] = None,
+    eval_data_refs: Optional[Sequence[Any]] = None,
+) -> None:
+    from src.diffusion import RewardPredictor
+
+    _validate_rewardpred_training_inputs(cfg_dataset, cfg_reward)
+    device_str, _ = _resolve_training_device(cfg_training)
+    reward_predictor = RewardPredictor(cfg_reward, device=device_str)
+    callbacks = _make_rewardpred_train_callbacks(
+        cfg_dataset=cfg_dataset,
+        cfg_reward=cfg_reward,
+        cfg_training=cfg_training,
+        train_data_refs=train_data_refs,
+        eval_data_refs=eval_data_refs,
+    )
+    train_general(
+        model=reward_predictor,
+        loader=loader,
+        cfg_training=cfg_training,
+        callbacks=callbacks,
+        eval_loader=eval_loader,
+    )
+
+
+def train_rewardpred(
+    cfg_dataset: RolloutChunkDatasetConfig,
+    cfg_reward: Any,
+    cfg_training: TrainingConfig,
+) -> None:
+    """Train the reward predictor with phase-local epochs/batch size and RewardPredictorConfig.lr."""
+    from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
+
+    device_str, _ = _resolve_training_device(cfg_training)
+    reward_dataset_cfg = replace(cfg_dataset, normalize=False)
+
+    train_paths, eval_paths = _split_rollout_paths(
+        paths=cfg_training.data,
+        seed=cfg_training.seed,
+        train_fraction=cfg_training.train_fraction,
+    )
+
+    loader, _ = make_rollout_chunk_dataloader(
+        paths=train_paths,
+        config=reward_dataset_cfg,
+        batch_size=cfg_training.batch_size,
+        num_workers=cfg_training.num_workers,
+        shuffle=True,
+        drop_last=True,
+        encoder=None,
+        obs_keys=None,
+        encoder_device=device_str,
+    )
+    eval_loader = None
+    if eval_paths:
+        eval_loader, _ = make_rollout_chunk_dataloader(
+            paths=eval_paths,
+            config=reward_dataset_cfg,
+            batch_size=cfg_training.batch_size,
+            num_workers=cfg_training.num_workers,
+            shuffle=False,
+            drop_last=False,
+            encoder=None,
+            obs_keys=None,
+            encoder_device=device_str,
+        )
+
+    train_rewardpred_with_loaders(
+        cfg_dataset=reward_dataset_cfg,
+        cfg_reward=cfg_reward,
+        cfg_training=cfg_training,
+        loader=loader,
+        eval_loader=eval_loader,
+        train_data_refs=train_paths,
+        eval_data_refs=eval_paths,
+    )
+
+
+train_reward = train_rewardpred
+train_reward_with_loaders = train_rewardpred_with_loaders
+
+
 __all__ = [
+    "derive_phase_training_config",
     "PathLike",
+    "TrainLoopCallbacks",
     "TrainingConfig",
     "train",
+    "train_general",
     "train_reward",
+    "train_rewardpred",
+    "train_rewardpred_with_loaders",
+    "train_reward_with_loaders",
     "train_sope",
     "train_sope_with_loaders",
 ]

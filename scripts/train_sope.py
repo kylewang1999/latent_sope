@@ -76,6 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--data", type=Path, default=_resolve_default_data_path())
     parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument("--reward-epochs", type=int, default=100)
+    parser.add_argument("--reward-batch-size", type=int, default=1024)
+    parser.add_argument("--reward-lr", type=float, default=1e-3)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=8)
@@ -118,9 +121,14 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    from src.diffusion import SopeDiffusionConfig
+    from src.diffusion import RewardPredictorConfig, SopeDiffusionConfig
     from src.robomimic_interface.dataset import RolloutChunkDatasetConfig
-    from src.train import TrainingConfig, train_sope
+    from src.train import (
+        TrainingConfig,
+        derive_phase_training_config,
+        train_rewardpred,
+        train_sope,
+    )
 
     data_path = args.data.resolve()
     checkpoint_dir = args.checkpoint_dir.resolve() if args.checkpoint_dir is not None else _resolve_default_checkpoint_dir()
@@ -181,11 +189,36 @@ def main() -> None:
         wandb_mode=args.wandb_mode,
         wandb_tags=("train_sope_film", data_path.stem),
     )
+    cfg_training_diffusion = derive_phase_training_config(
+        cfg_training,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        wandb_run_name_suffix="diffusion",
+        wandb_tags=("diffusion",),
+    )
+    cfg_training_rewardpred = derive_phase_training_config(
+        cfg_training,
+        epochs=args.reward_epochs,
+        batch_size=args.reward_batch_size,
+        wandb_run_name_suffix="rewardpred",
+        wandb_tags=("rewardpred",),
+    )
+    cfg_reward = RewardPredictorConfig(
+        state_dim=latent_dim,
+        action_dim=action_dim,
+        lr=args.reward_lr,
+    )
 
     train_sope(
         cfg_dataset=cfg_dataset,
         cfg_diffusion=cfg_diffusion,
-        cfg_training=cfg_training,
+        cfg_training=cfg_training_diffusion,
+    )
+    train_rewardpred(
+        cfg_dataset=cfg_dataset,
+        cfg_reward=cfg_reward,
+        cfg_training=cfg_training_rewardpred,
     )
 
 

@@ -7,7 +7,7 @@ this repository.
 The relevant code is in the vendored SOPE tree under
 [`third_party/sope/opelab/`](../third_party/sope/opelab/).
 
-## Short Answer
+## 1. Short Answer
 
 SOPE trains a transition-level regressor for immediate reward, not return-to-go
 and not terminal success.
@@ -37,9 +37,9 @@ $$\begin{align}
 
 where $r(s, a)$ is the immediate per-step reward from the offline dataset.
 
-## Where Training Happens
+## 2. Where Training Happens
 
-### 1. Training entrypoint
+### 2.1 Training entrypoint
 
 The reward predictor is instantiated and trained from
 [`third_party/sope/opelab/examples/helpers.py`](../third_party/sope/opelab/examples/helpers.py).
@@ -57,7 +57,7 @@ Relevant call site:
 This means reward-model training happens once per evaluation run, before the
 baseline estimates are computed.
 
-### 2. Dataset-to-supervision conversion
+### 2.2 Dataset-to-supervision conversion
 
 The actual extraction of training examples happens in
 [`third_party/sope/opelab/core/data.py`](../third_party/sope/opelab/core/data.py).
@@ -86,14 +86,14 @@ Important implication:
 - this matches the STITCH-OPE description of learning an immediate reward model
   from behavior transitions
 
-## Model Architecture And Optimization
+## 3. Model Architecture And Optimization
 
 The model configuration is split across
 [`third_party/sope/opelab/core/data.py`](../third_party/sope/opelab/core/data.py)
 and
 [`third_party/sope/opelab/core/reward.py`](../third_party/sope/opelab/core/reward.py).
 
-### Architecture
+### 3.1 Architecture
 
 `Data.train_reward_estimator(...)` constructs
 
@@ -103,7 +103,7 @@ $$\begin{align}
 
 so the default reward predictor is a 2-hidden-layer MLP with scalar output.
 
-### Optimizer and objective
+### 3.2 Optimizer and objective
 
 `RewardEstimator` in
 [`third_party/sope/opelab/core/reward.py`](../third_party/sope/opelab/core/reward.py)
@@ -131,7 +131,7 @@ number of iterations:
   `Data.train_reward_estimator(...)`
 - each training step samples a minibatch by index with replacement
 
-## Ensemble Structure
+## 4. Ensemble Structure
 
 SOPE wraps the single reward regressor in `RewardEnsembleEstimator`, defined in
 [`third_party/sope/opelab/core/reward.py`](../third_party/sope/opelab/core/reward.py).
@@ -165,7 +165,7 @@ So despite the ensemble wrapper, the current default behavior is effectively a
 single reward regressor trained on a 50% random subsample of the transition
 dataset.
 
-## How The Predictor Is Used During OPE
+## 5. How The Predictor Is Used During OPE
 
 The learned reward predictor is consumed in
 [`third_party/sope/opelab/core/baselines/diffuser.py`](../third_party/sope/opelab/core/baselines/diffuser.py).
@@ -196,7 +196,7 @@ This is the exact role of the reward predictor in SOPE:
 - it does **not** guide the diffusion sampler
 - it predicts immediate reward, not long-horizon value
 
-## Data Assumptions
+## 6. Data Assumptions
 
 The current SOPE reward-predictor path assumes:
 
@@ -223,7 +223,7 @@ The code does not currently add:
 So for sparse tasks, SOPE is relying on plain supervised regression on sparse
 per-transition rewards.
 
-## Repo-Specific Distinction: SOPE Vs `rei`
+## 7. Repo-Specific Distinction: SOPE Vs `rei`
 
 This repository also contains a separate reward-scoring path in
 [`rei/src/latent_sope/eval/reward_model.py`](../rei/src/latent_sope/eval/reward_model.py).
@@ -244,7 +244,80 @@ If the question is specifically "how does SOPE train the per-step reward
 predictor?", the authoritative implementation is the vendored SOPE path in
 `third_party/sope/opelab/core/{data,reward}.py`.
 
-## Practical Summary
+## 8. Robomimic Lift Reward Predictor In `main`
+
+The main worktree also now contains a repository-specific reward predictor for
+robomimic Lift rollout data. This path is still SOPE-style in the sense that it
+learns immediate reward from raw transition inputs:
+
+$$\begin{align}
+\hat{r}_\phi(s_t, a_t) \approx \tilde{r}_t.
+\end{align}$$
+
+For the rollout corpus under
+`data/rollout/rmimic-lift-ph-lowdim_diffusion_260130`, the ground-truth label
+is read directly from the saved rollout file field `rewards`.
+
+The important repository-specific change is that the default target is shifted:
+
+$$\begin{align}
+\tilde{r}_t = T(s_t, r_t) = r_t - 1.
+\end{align}$$
+
+So raw reward `0` becomes `-1` and raw reward `1` becomes `0`.
+
+### 8.1 Label distribution
+
+On the current robomimic Lift rollout corpus:
+
+- there are `300` rollout files
+- there are `13,305` transition steps total
+- rewards are binary, with values in `{0, 1}`
+- `297` steps are positive, so the positive-step fraction is about `2.23%`
+- `297 / 300` trajectories contain exactly one positive reward
+- every positive reward occurs on the final step of its trajectory
+
+So the stored reward behaves like a terminal-success label rather than a dense
+shaped reward. The default shift $\tilde{r}_t = r_t - 1$ preserves immediate
+reward regression while making cumulative predicted reward more informative for
+later OPE-style scoring.
+
+### 8.2 State alignment
+
+The rollout `.h5` files store low-dim observations with a frame-stack axis of
+length `2`, ordered from oldest to newest. For reward prediction, the current
+state must therefore come from the newest frame:
+
+$$\begin{align}
+s_t = \texttt{latents}[t, -1, :].
+\end{align}$$
+
+The dataset path in `main` now uses `latents[:, -1, :]` rather than
+`latents[:, 0, :]` when collapsing low-dim frame stacks for reward
+supervision.
+
+### 8.3 Code path
+
+The repository-specific reward predictor is implemented in:
+
+- [`src/robomimic_interface/dataset.py`](../src/robomimic_interface/dataset.py):
+  newest-frame low-dim collapse plus `rewards_to_raw` and transformed
+  `rewards_to`
+- [`src/diffusion.py`](../src/diffusion.py):
+  `RewardPredictorConfig` and `RewardPredictor`
+- [`src/train.py`](../src/train.py):
+  `train_rewardpred(...)`, `train_rewardpred_with_loaders(...)`, and
+  compatibility aliases `train_reward(...)` /
+  `train_reward_with_loaders(...)`
+- [`scripts/train_sope.py`](../scripts/train_sope.py):
+  separate reward hyperparameters, where reward `lr` comes from
+  `RewardPredictorConfig.lr` via `--reward-lr`, while reward `epochs` and
+  `batch_size` come from the reward-side `TrainingConfig` via
+  `--reward-epochs` and `--reward-batch-size`
+- [`src/eval.py`](../src/eval.py):
+  `load_reward_checkpoint(...)`
+
+## 9. Practical Summary
 
 SOPE's reward predictor in this repo is:
 
@@ -258,7 +331,12 @@ SOPE's reward predictor in this repo is:
 - consumed only during synthetic trajectory scoring when no hand-coded reward
   function is available
 
-## Dense Lift Reward Follow-Up
+The robomimic Lift reward predictor in `main` keeps the same immediate-reward
+regression structure, but it uses rollout-file rewards, a default shifted
+target $\tilde{r}_t = r_t - 1$, and the newest frame in the saved low-dim
+stack as the current state.
+
+## 9. Dense Lift Reward Follow-Up
 
 For robomimic / robosuite Lift, a useful adjacent question is what shaped reward
 to use if we later want denser supervision for reward modeling, OPE, or value

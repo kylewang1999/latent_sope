@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -105,6 +105,27 @@ def _resolve_eef_pos_slice(state_dim: int) -> slice:
     return slice(start, stop)
 
 
+RewardTransformName = Literal["identity", "minus_one"]
+
+
+def _identity_reward_transform(true_state: np.ndarray, raw_reward: np.ndarray) -> np.ndarray:
+    del true_state
+    return np.asarray(raw_reward, dtype=np.float32)
+
+
+def _minus_one_reward_transform(true_state: np.ndarray, raw_reward: np.ndarray) -> np.ndarray:
+    del true_state
+    return np.asarray(raw_reward, dtype=np.float32) - 1.0
+
+
+def resolve_reward_transform(name: RewardTransformName) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+    if name == "identity":
+        return _identity_reward_transform
+    if name == "minus_one":
+        return _minus_one_reward_transform
+    raise ValueError(f"Unknown reward_transform={name!r}.")
+
+
 @dataclass(frozen=True)
 class RolloutChunkDatasetConfig:
     """Config for rollout chunk dataset.
@@ -114,6 +135,7 @@ class RolloutChunkDatasetConfig:
     - frame_stack: number of past frames to condition on (overrides rollout/policy frame_stack)
     - source: "latents" (from RolloutLatentTrajectory.latents) or "obs" (from obs + encoder)
     - state_projection: use the full state or just robot0_eef_pos
+    - reward_transform: named transform applied to per-step rewards using the raw current state
     - disable_conditioning: zero action history/targets for unconditioned debug diffusion
     - normalize: apply dataset-level normalization stats
     - return_metadata: return index/demo_id/t0 metadatadata for debugging
@@ -125,6 +147,7 @@ class RolloutChunkDatasetConfig:
     latents_dim: int = 19
     action_dim: int = 7
     state_projection: Literal["full", "eef_pos"] = "full"
+    reward_transform: RewardTransformName = "minus_one"
     disable_conditioning: bool = False
     normalize: bool = False
     return_metadata: bool = True
@@ -154,7 +177,9 @@ class RolloutChunkDataset:
         self.latents = self._preprocess_latents()
         self.latents_dim = int(self.latents.shape[-1])
         self.actions = np.asarray(self.traj.actions, dtype=np.float32)
+        self.rewards = np.asarray(self.traj.rewards, dtype=np.float32)
         self.action_dim = int(self.actions.shape[-1])
+        reward_transform = resolve_reward_transform(self.config.reward_transform)
 
         T = self.latents.shape[0]
         W = int(config.chunk_size)
@@ -166,18 +191,25 @@ class RolloutChunkDataset:
         actions_from_list: List[np.ndarray] = []
         states_to_list: List[np.ndarray] = []
         actions_to_list: List[np.ndarray] = []
+        rewards_to_raw_list: List[np.ndarray] = []
+        rewards_to_list: List[np.ndarray] = []
         t0_list: List[int] = []
         for t0 in range(0, last_start + 1, config.stride):
             # SOPE trajectory chunks: (s_t, a_t, s_{t+1}, ..., s_{t+W}) and actions (a_t..a_{t+W-1}).
             # incomplete chunks are discarded by the looping stride automatically
-            states_to_list.append(self.latents[t0: t0+W+1])
+            states_to = self.latents[t0 : t0 + W + 1]
             actions_to = self.actions[t0 : t0 + W]
+            rewards_to_raw = self.rewards[t0 : t0 + W]
+            rewards_to = reward_transform(states_to[:-1], rewards_to_raw)
             states_from = _collect_frame_stack(self.latents, t0 - 1, S)
             actions_from = _collect_frame_stack(self.actions, t0 - 1, S)
             if self.config.disable_conditioning:
                 actions_to = np.zeros_like(actions_to, dtype=np.float32)
                 actions_from = np.zeros_like(actions_from, dtype=np.float32)
+            states_to_list.append(states_to)
             actions_to_list.append(actions_to)
+            rewards_to_raw_list.append(np.asarray(rewards_to_raw, dtype=np.float32))
+            rewards_to_list.append(np.asarray(rewards_to, dtype=np.float32))
             states_from_list.append(states_from)
             actions_from_list.append(actions_from)
             t0_list.append(int(t0))
@@ -185,6 +217,8 @@ class RolloutChunkDataset:
         self.states_from = np.stack(states_from_list, axis=0).astype(np.float32)  # (N, frame_stack, Dz)
         self.states_to = np.stack(states_to_list, axis=0).astype(np.float32)  # (N, chunk_size + 1, Dz)
         self.actions_to = np.stack(actions_to_list, axis=0).astype(np.float32)  # (N, chunk_size, Da)
+        self.rewards_to_raw = np.stack(rewards_to_raw_list, axis=0).astype(np.float32)  # (N, chunk_size)
+        self.rewards_to = np.stack(rewards_to_list, axis=0).astype(np.float32)  # (N, chunk_size)
         self.actions_from = np.stack(actions_from_list, axis=0).astype(np.float32)  # (N, frame_stack, Da)
         self.t0 = np.asarray(t0_list, dtype=np.int32)
         self._validate_data_shapes()
@@ -213,12 +247,16 @@ class RolloutChunkDataset:
         assert self.actions_from.shape == (N, S, Da), f"Expected actions_from to have shape (N, S, Da), got {self.actions_from.shape}"
         assert self.states_to.shape == (N, W+1, Dz), f"Expected states_to to have shape (N, W+1, Dz), got {self.states_to.shape}"
         assert self.actions_to.shape == (N, W, Da), f"Expected actions_to to have shape (N, W, Da), got {self.actions_to.shape}"
+        assert self.rewards_to_raw.shape == (N, W), f"Expected rewards_to_raw to have shape (N, W), got {self.rewards_to_raw.shape}"
+        assert self.rewards_to.shape == (N, W), f"Expected rewards_to to have shape (N, W), got {self.rewards_to.shape}"
 
     def _preprocess_latents(self) -> np.ndarray:
         if self.config.source == "latents":
             z = np.asarray(self.traj.latents)
             if z.ndim == 3:
-                z = z[:, 0, :]
+                # Rollout files store low-dim observations oldest->newest along the
+                # frame-stack axis. The newest frame is the true current state.
+                z = z[:, -1, :]
             if self.config.state_projection == "eef_pos":
                 return np.asarray(
                     z[:, _resolve_eef_pos_slice(z.shape[-1])],
@@ -257,6 +295,8 @@ class RolloutChunkDataset:
         actions_from = self.actions_from[idx]
         states_to = self.states_to[idx]
         actions_to = self.actions_to[idx]
+        rewards_to_raw = self.rewards_to_raw[idx]
+        rewards_to = self.rewards_to[idx]
         # NOTE: With the current construction, `states_from` ends at t0-1 and
         # `states_to` starts at t0. You can concatenate along time to form a
         # continuous, non-overlapping state sequence:
@@ -276,12 +316,16 @@ class RolloutChunkDataset:
         actions_from_t = torch.from_numpy(np.asarray(actions_from, dtype=np.float32))
         states_to_t = torch.from_numpy(np.asarray(states_to, dtype=np.float32))
         actions_to_t = torch.from_numpy(np.asarray(actions_to, dtype=np.float32))
+        rewards_to_raw_t = torch.from_numpy(np.asarray(rewards_to_raw, dtype=np.float32))
+        rewards_to_t = torch.from_numpy(np.asarray(rewards_to, dtype=np.float32))
 
         return {
             "states_from": states_from_t,
             "actions_from": actions_from_t,
             "states_to": states_to_t,
             "actions_to": actions_to_t,
+            "rewards_to_raw": rewards_to_raw_t,
+            "rewards_to": rewards_to_t,
             "metadata": (
                 {
                     "index": torch.tensor(int(idx), dtype=torch.int32),

@@ -1,4 +1,4 @@
-## Part 1: PolicyFeatureHook (`src/latent_sope/robomimic_interface/rollout.py`)
+## 1. Part 1: PolicyFeatureHook (`src/latent_sope/robomimic_interface/rollout.py`)
 
 This class walks the policy's module tree to find `VisualCore` and exposes
 `_visual_net`, `_activation`, `_randomizers` for use in encoding.
@@ -76,7 +76,7 @@ class PolicyFeatureHook:
 
 ---
 
-## Part 2: Full Offline Extraction Script
+## 2. Part 2: Full Offline Extraction Script
 
 ```python
 import sys

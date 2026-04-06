@@ -4,7 +4,7 @@ Relevant code:
 - [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
 - [src/diffusion.py](../src/diffusion.py)
 
-## Summary
+## 1. Summary
 
 This note documents the structure of robomimic's
 [`ConditionalUnet1D`](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
@@ -18,7 +18,7 @@ inside each `ConditionalResidualBlock1D`, where a conditioning vector is mapped
 to per-channel scale and bias parameters and then applied to the intermediate
 1D convolution features.
 
-## Tensor Layout
+## 2. Tensor Layout
 
 The public `ConditionalUnet1D.forward(...)` contract is:
 
@@ -50,7 +50,7 @@ $$\begin{align}
 This same `global_feature` is passed into every conditioned residual block in
 the down path, middle blocks, and up path.
 
-## Network Structure
+## 3. Network Structure
 
 Let
 
@@ -111,7 +111,7 @@ Two implementation details matter here:
    `reversed(in_out[1:])`, so the deepest down stage does not get a symmetric
    decoder stage
 
-## Why The Conditioning Is FiLM-Style
+## 4. Why The Conditioning Is FiLM-Style
 
 The conditioning mechanism lives in
 [`ConditionalResidualBlock1D`](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py).
@@ -163,7 +163,7 @@ $$\begin{align}
 but both are FiLM-family conditioning schemes. The difference is only the
 specific affine parameterization.
 
-## Relationship To `FilmConditionedBackbone`
+## 5. Relationship To `FilmConditionedBackbone`
 
 [`FilmConditionedBackbone`](../src/diffusion.py) does not itself implement
 FiLM logic. Its job is only to adapt the SOPE diffusion interface to the
@@ -181,7 +181,7 @@ So the correct boundary is:
 - `ConditionalUnet1D`: conditioned U-Net
 - `ConditionalResidualBlock1D`: where the FiLM-style modulation actually occurs
 
-## Validation
+## 6. Validation
 
 If the robomimic denoiser structure changes, re-read:
 

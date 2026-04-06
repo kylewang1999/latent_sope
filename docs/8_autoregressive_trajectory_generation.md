@@ -7,7 +7,7 @@ Relevant code:
 - [third_party/sope/opelab/core/baselines/diffusion/diffusion.py](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py)
 - [third_party/sope/opelab/examples/helpers.py](../third_party/sope/opelab/examples/helpers.py)
 
-## Summary
+## 1. Summary
 
 This note covers both:
 
@@ -33,7 +33,7 @@ After this change, `SopeDiffuser.generate_full_trajectory(...)` is the
 canonical implementation of that autoregressive loop, and
 [`src/eval.py`](../src/eval.py) calls the model method directly.
 
-## Local Wrapper Behavior
+## 2. Local Wrapper Behavior
 
 The generated trajectory remains chunk-autoregressive:
 
@@ -49,16 +49,25 @@ The method still:
 - samples `chunk_horizon` future steps per iteration
 - truncates the last chunk when `max_length` is not a multiple of `chunk_horizon`
 - returns unnormalized NumPy arrays for states and actions
+- uses `SopeDiffusionConfig.trajectory_horizon` as the default rollout length when
+  `max_length` is omitted
 
 `conditioning_mode="none"` is still rejected for full-trajectory generation,
 matching the previous eval-only helper.
 
-## Upstream SOPE Contract
+The default `trajectory_horizon` is `60`. That matches the repository's
+rollout-dataset generation path for robomimic Lift in
+[`scripts/create_rollout_dataset.py`](../scripts/create_rollout_dataset.py),
+which uses `--horizon 60` by default for the
+`rmimic-lift-ph-lowdim_diffusion_260130` rollouts that the SOPE training and
+evaluation scripts consume.
+
+## 3. Upstream SOPE Contract
 
 The original upstream SOPE rollout-generation path uses a different
 conditioning and stitching rule.
 
-### Conditioning
+### 3.1 Conditioning
 
 Upstream rollout generation conditions on a dict like:
 
@@ -75,7 +84,7 @@ The initial condition is built by:
 After each sampled chunk, the next condition is updated from the last generated
 state only, not from a multi-step prefix window.
 
-### Chunk Stitching
+### 3.2 Chunk Stitching
 
 Upstream SOPE samples a chunk of length `mini_trajectory_size`, but stores only
 `mini_trajectory_size - 1` steps in the final rollout.
@@ -89,7 +98,7 @@ This differs from the local
 stores all generated future steps from each chunk and reconditions on the last
 `frame_stack` normalized states.
 
-### Normalization And Guidance Space
+### 3.3 Normalization And Guidance Space
 
 Upstream SOPE uses a joint normalizer over the full transition vector $(s, a)$.
 
@@ -113,7 +122,7 @@ where $\mu$ is the current reverse-process mean in unnormalized trajectory
 space, $\lambda_t$ is either a fixed or schedule-scaled multiplier, and $r$ is
 the negative-guidance ratio.
 
-### Tanh Action Mode
+### 3.4 Tanh Action Mode
 
 Upstream SOPE supports `tanh_action=True` in the top-level
 [`Diffuser`](../third_party/sope/opelab/core/baselines/diffuser.py).
@@ -126,7 +135,7 @@ That mode:
 The diffusion model still predicts a full joint transition chunk; only the
 action slice is squashed.
 
-### Termination Handling
+### 3.5 Termination Handling
 
 Upstream autoregressive generation is trajectory-aware:
 
@@ -137,7 +146,7 @@ Upstream autoregressive generation is trajectory-aware:
 The local `SopeDiffuser.generate_full_trajectory(...)` path does not currently
 implement this early-stop behavior.
 
-## Comparison
+## 4. Comparison
 
 Relative to upstream SOPE, the active local wrapper in
 [`src/diffusion.py`](../src/diffusion.py):
@@ -151,12 +160,12 @@ Relative to upstream SOPE, the active local wrapper in
 So the local implementation should be treated as a related but different
 autoregressive contract rather than a line-by-line port of upstream SOPE.
 
-## Validation
+## 5. Validation
 
 Run:
 
 ```bash
-source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/diffusion.py src/eval.py
+source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/diffusion.py src/eval.py scripts/create_rollout_dataset.py
 ```
 
 This is a syntax-level validation for the moved autoregressive path. A full

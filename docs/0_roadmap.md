@@ -1,12 +1,12 @@
 # Meeting Logs
 
-## 2026-04-08
+## 1. 2026-04-08
 
 TODOs:
 1. Reward MLP learning 
 2. Steering and grad-log-prob for robomimic diffusion policy
 
-## 2026-03-30
+## 2. 2026-03-30
 
 - Issue: diffusing state-space traj has good loss but poor trajectory rmse error: [train_sope | wkt_sope – Weights & Biases](https://wandb.ai/k5wang-main-university-of-southern-california/wkt_sope/runs/un5gr8en?nw=nwuserk5wangmain)
   - Training with `--diffuser-eef-pos-only=True`: https://wandb.ai/k5wang-main-university-of-southern-california/wkt_sope/runs/2a5gukj9; rmse on eef position only is also very high; this might suggest problems with the conditioning scheme
@@ -21,7 +21,7 @@ Suggestions from Stephen:
   - What's the SOTA for conditioning in diffusion models?
   - Might wanna use different conditioning schemes for our robomimic state adaptation.
 
-## 2026-03-26
+## 3. 2026-03-26
 
 1\. Q: How is [`rei/src/latent_sope/robomimic_interface/guidance.py`](../../rei/src/latent_sope/robomimic_interface/guidance.py) used?
 - Implement my version of the guidance and check if it works.
@@ -48,9 +48,9 @@ Suggestions from Stephen:
    against both normalized-space reconstruction and the persistence baseline.
 
 
-## 2026-03-11, W9
+## 4. 2026-03-11, W9
 
-### Questions & Discussions
+### 4.1 Questions & Discussions
 
 1. Investigate SOPE diffusion guidance when the behavior policy $\beta$ and target policy $\pi$ have different input signatures, such as visual embeddings from different models.
   - Note from Yutai: SOPE primarily uses a GMM backbone to evaluate log-likelihoods.
@@ -62,7 +62,7 @@ Suggestions from Stephen:
   - Review [reward.py](third_party/sope/opelab/core/reward.py).
   - Dose SOPE's experiment with D4RL use sparse or dense reward? Note that Robomimic's reward for the lift task uses **sparse reward.**
 
-### GPTs Plans
+### 4.2 GPTs Plans
 
 1. Trace the SOPE guidance path end to end.
   - Read the SOPE code that computes behavior-policy likelihoods or scores, starting from the policy evaluation entry point and following calls into the guidance logic.

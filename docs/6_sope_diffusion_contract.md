@@ -18,14 +18,14 @@ This note consolidates four closely related questions:
 
 The goal is to make the conditioning contract explicit.
 
-## Standard DDPM Reminder
+## 1. Standard DDPM Reminder
 
 DDPM has:
 
 1. a fixed forward process $q$
 2. a learned reverse process $p_\theta$
 
-### Forward noising
+### 1.1 Forward noising
 
 $$\begin{align}
 q(x_t \mid x_0)
@@ -49,7 +49,7 @@ x_t
 \epsilon \sim \mathcal{N}(0, I).
 \end{align}$$
 
-### Reverse denoising
+### 1.2 Reverse denoising
 
 The reverse model predicts either noise or $x_0$. In the epsilon-prediction
 parameterization,
@@ -82,7 +82,7 @@ $$\begin{align}
 \right].
 \end{align}$$
 
-## How SOPE Implements DDPM
+## 2. How SOPE Implements DDPM
 
 In vendored SOPE:
 
@@ -90,7 +90,7 @@ In vendored SOPE:
 - `p_losses(...)` is the training objective
 - `p_sample_loop(...)` is the reverse denoising loop used at inference
 
-### `q_sample`
+### 2.1 `q_sample`
 
 In [diffusion.py](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py),
 
@@ -109,7 +109,7 @@ x_t
 \sqrt{\bar\alpha_t} x_0 + \sqrt{1-\bar\alpha_t}\epsilon.
 \end{align}$$
 
-### `p_losses`
+### 2.2 `p_losses`
 
 `p_losses(...)` does:
 
@@ -143,7 +143,7 @@ More precisely:
 So conditioning is enforced around the denoiser, not inside the denoiser
 module itself.
 
-### Reverse sampling
+### 2.3 Reverse sampling
 
 At inference, [p_sample_loop(...)](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py)
 starts from Gaussian noise:
@@ -161,7 +161,7 @@ Then:
 So the conditioned slice is enforced throughout the whole backward denoising
 process.
 
-## What `apply_conditioning` Actually Does
+## 3. What `apply_conditioning` Actually Does
 
 The helper [apply_conditioning(...)](../third_party/sope/opelab/core/baselines/diffusion/helpers.py)
 does not use a mask over all transition dimensions. It hard-codes one block:
@@ -185,7 +185,7 @@ That means:
 - the conditioned state channels are clamped
 - the action channels at those same timesteps remain latent
 
-## Original SOPE Conditioning Contract
+## 4. Original SOPE Conditioning Contract
 
 In original SOPE D4RL training, each example is a full state-action trajectory:
 
@@ -207,7 +207,7 @@ That is coherent because the action channels, including the action at the
 conditioned timestep, are part of the trajectory the model is supposed to
 generate.
 
-## Local Chunk Fields
+## 5. Local Chunk Fields
 
 For local chunking at start index `t0`, the dataset builds:
 
@@ -226,7 +226,7 @@ This decomposes the rollout into:
 - a historical prefix: `states_from`, `actions_from`
 - a future chunk to predict: `states_to[:-1]`, `actions_to`
 
-## SOPE-Aligned Mapping for Local Chunks
+## 6. SOPE-Aligned Mapping for Local Chunks
 
 To match original SOPE, the local wrapper should map the chunk fields as:
 
@@ -262,7 +262,7 @@ $$\begin{align}
 
 This is now implemented in [src/diffusion.py](../src/diffusion.py):
 
-## EEF-Only Loss-Mask Ablation
+## 7. EEF-Only Loss-Mask Ablation
 
 The rollout latents used by [`scripts/train_sope.py`](../scripts/train_sope.py)
 come from the low-dim concatenation path in
@@ -289,7 +289,7 @@ the full-state transition contract:
 This is useful for checking whether poor chunk RMSE is concentrated in
 non-EEF channels while preserving the original SOPE-style conditioning path.
 
-## EEF-Only Unconditioned Debug Mode
+## 8. EEF-Only Unconditioned Debug Mode
 
 The narrower debug mode uses a dataset-schema change instead of a loss mask.
 
@@ -325,7 +325,7 @@ This debug path is intentionally not the same thing as
 Full autoregressive trajectory generation remains unsupported for this
 unconditioned debug mode.
 
-## Evaluation-Side EEF Diagnostics
+## 9. Evaluation-Side EEF Diagnostics
 
 The chunk evaluator in [src/eval.py](../src/eval.py) now computes
 `robot0_eef_pos` diagnostics from the same slice used by the training-time
@@ -344,7 +344,7 @@ If the state layout does not expose an EEF slice, those metrics remain unset
 instead of failing evaluation. In the unconditioned 3D debug path, action and
 transition metrics are also left unset because they are not meaningful.
 
-## Validation
+## 10. Validation
 
 Small validation to rerun after changes:
 
@@ -359,7 +359,7 @@ The current canonical implementation differs from that historical contract:
 - `make_cond(...)` flattens `states_from` into FiLM conditioning
 - there is no separate prefix-in-trajectory training path anymore
 
-## Why `actions_from` Is Not SOPE Conditioning
+## 11. Why `actions_from` Is Not SOPE Conditioning
 
 `actions_from` is historical context from the local dataset, but it is not part
 of SOPE's explicit conditioning API.
@@ -379,7 +379,7 @@ So the correct interpretation is:
 - `states_to[:-1]`: future state targets
 - `actions_to`: future action targets
 
-## Why the Old Local Mapping Was Inconsistent
+## 12. Why the Old Local Mapping Was Inconsistent
 
 Previously, the wrapper built:
 
@@ -404,7 +404,7 @@ conditioning, but there the unconditioned action channels are part of the
 trajectory to be generated. In the old local wrapper, some of those
 unconditioned action channels belonged to the historical prefix instead.
 
-## Conditioning and the Denoiser $\epsilon_\theta$
+## 13. Conditioning and the Denoiser $\epsilon_\theta$
 
 It is easy to misread `apply_conditioning(...)` as modifying the model itself.
 It does not.
@@ -418,7 +418,7 @@ $$\begin{align}
 Conditioning is implemented by overwriting parts of the trajectory tensor around
 that call:
 
-### In training
+### 13.1 In training
 
 $$\begin{align}
 x_t &= q(x_t \mid x_0), \\
@@ -427,7 +427,7 @@ x_t &= q(x_t \mid x_0), \\
 \hat\epsilon_{\text{cond}} &= \text{apply\_conditioning}(\hat\epsilon, \text{cond}).
 \end{align}$$
 
-### In reverse sampling
+### 13.2 In reverse sampling
 
 At every reverse step:
 
@@ -451,7 +451,7 @@ So conditioning affects:
 But it always acts by overwriting selected tensor slices, not by changing the
 definition of $\epsilon_\theta$ itself.
 
-## Practical Summary
+## 14. Practical Summary
 
 When reading the current local SOPE wrapper:
 

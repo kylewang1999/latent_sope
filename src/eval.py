@@ -7,12 +7,47 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import torch
 
-from src.diffusion import NormalizationStats, SopeDiffuser, SopeDiffusionConfig
+from src.diffusion import (
+    NormalizationStats,
+    RewardPredictor,
+    RewardPredictorConfig,
+    SopeDiffuser,
+    SopeDiffusionConfig,
+)
 from src.robomimic_interface.rollout import RolloutLatentTrajectory, load_rollout_latents
 from src.utils import resolve_device
 
 
 NP_FLOAT = np.float32
+
+
+def _to_device(
+    batch: dict[str, torch.Tensor],
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    out: dict[str, torch.Tensor] = {}
+    for key, value in batch.items():
+        if value is None or key == "metadata":
+            out[key] = value
+            continue
+        if torch.is_tensor(value):
+            out[key] = value.to(device)
+        else:
+            out[key] = value
+    return out
+
+
+def _flatten_scalar_metrics(info: Any) -> dict[str, float]:
+    if not isinstance(info, dict):
+        return {}
+
+    flat: dict[str, float] = {}
+    for key, value in info.items():
+        if torch.is_tensor(value) and value.numel() == 1:
+            flat[key] = float(value.item())
+        elif np.isscalar(value):
+            flat[key] = float(value)
+    return flat
 
 
 def _call_loss(
@@ -185,6 +220,56 @@ def load_diffusion_checkpoint(
     diffuser.diffusion.load_state_dict(payload["diffusion_state_dict"])
     diffuser.diffusion.eval()
     return diffuser, payload
+
+
+def load_reward_checkpoint(
+    checkpoint_path: Path,
+    *,
+    device: Optional[str] = None,
+) -> tuple[RewardPredictor, dict[str, Any]]:
+    checkpoint_path = Path(checkpoint_path)
+    payload = torch.load(str(checkpoint_path), map_location="cpu")
+    cfg_reward = RewardPredictorConfig(**payload["reward_config"])
+    predictor = RewardPredictor(
+        cfg_reward,
+        device=device or resolve_device(prefer_cuda=True),
+    )
+    predictor.load_state_dict(payload["reward_state_dict"])
+    predictor.eval()
+    return predictor, payload
+
+
+def _evaluate_reward_predictor(
+    reward_predictor: Any,
+    loader: torch.utils.data.DataLoader,
+    device: torch.device,
+) -> dict[str, float]:
+    reward_predictor.eval()
+    losses: list[float] = []
+    baseline_zero_mses: list[float] = []
+    pred_means: list[float] = []
+    target_means: list[float] = []
+    with torch.no_grad():
+        for batch in loader:
+            batch_t = _to_device(batch, device)
+            loss, info = reward_predictor.loss(batch_t)
+            losses.append(float(loss.item()))
+            flat_info = _flatten_scalar_metrics(info)
+            if "reward_baseline_zero_mse" in flat_info:
+                baseline_zero_mses.append(float(flat_info["reward_baseline_zero_mse"]))
+            if "reward_pred_mean" in flat_info:
+                pred_means.append(float(flat_info["reward_pred_mean"]))
+            if "reward_target_mean" in flat_info:
+                target_means.append(float(flat_info["reward_target_mean"]))
+
+    return {
+        "reward_eval/loss": float(np.mean(losses)) if losses else float("nan"),
+        "reward_eval/baseline_zero_mse": (
+            float(np.mean(baseline_zero_mses)) if baseline_zero_mses else float("nan")
+        ),
+        "reward_eval/pred_mean": float(np.mean(pred_means)) if pred_means else float("nan"),
+        "reward_eval/target_mean": float(np.mean(target_means)) if target_means else float("nan"),
+    }
 
 
 def _build_gt_future_chunk(

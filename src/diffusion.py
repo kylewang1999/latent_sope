@@ -32,6 +32,128 @@ import third_party.sope.opelab.core.baselines.diffusion.utils as diffusion_utils
 
 
 @dataclass(frozen=True)
+class RewardPredictorConfig:
+    """Configuration for a SOPE-style transition reward regressor."""
+
+    state_dim: int = 19
+    action_dim: int = 7
+    hidden_dims: Tuple[int, ...] = (64, 64)
+    lr: float = 1e-3
+    weight_decay: float = 0.0
+    loss_type: Literal["mse"] = "mse"
+
+
+class RewardPredictor(nn.Module):
+    """Standalone SOPE-style reward predictor trained on immediate transformed reward."""
+
+    def __init__(
+        self,
+        cfg: RewardPredictorConfig,
+        *,
+        device: str = "cuda",
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.device = torch.device(device)
+        self.state_dim = int(cfg.state_dim)
+        self.action_dim = int(cfg.action_dim)
+        layers: list[nn.Module] = []
+        prev_dim = self.state_dim + self.action_dim
+        for hidden_dim in cfg.hidden_dims:
+            layers.append(nn.Linear(prev_dim, int(hidden_dim)))
+            layers.append(nn.ReLU())
+            prev_dim = int(hidden_dim)
+        layers.append(nn.Linear(prev_dim, 1))
+        self.model = nn.Sequential(*layers).to(self.device)
+
+    def _prepare_inputs(
+        self,
+        states: torch.Tensor | np.ndarray,
+        actions: torch.Tensor | np.ndarray,
+    ) -> tuple[torch.Tensor, tuple[int, ...]]:
+        states_t = torch.as_tensor(states, dtype=torch.float32, device=self.device)
+        actions_t = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
+        if states_t.shape[:-1] != actions_t.shape[:-1]:
+            raise ValueError(
+                "states and actions must share the same leading dimensions; "
+                f"got {states_t.shape} vs {actions_t.shape}."
+            )
+        if states_t.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"Expected state_dim={self.state_dim}, got last dim {states_t.shape[-1]}."
+            )
+        if actions_t.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"Expected action_dim={self.action_dim}, got last dim {actions_t.shape[-1]}."
+            )
+        leading_shape = tuple(states_t.shape[:-1])
+        flat_inputs = torch.cat(
+            [
+                states_t.reshape(-1, self.state_dim),
+                actions_t.reshape(-1, self.action_dim),
+            ],
+            dim=-1,
+        )
+        return flat_inputs, leading_shape
+
+    def forward(
+        self,
+        states: torch.Tensor | np.ndarray,
+        actions: torch.Tensor | np.ndarray,
+    ) -> torch.Tensor:
+        flat_inputs, leading_shape = self._prepare_inputs(states, actions)
+        preds = self.model(flat_inputs).squeeze(-1)
+        return preds.reshape(leading_shape)
+
+    def predict(
+        self,
+        states: torch.Tensor | np.ndarray,
+        actions: torch.Tensor | np.ndarray,
+    ) -> torch.Tensor:
+        was_training = self.training
+        self.eval()
+        with torch.no_grad():
+            preds = self.forward(states, actions)
+        if was_training:
+            self.train()
+        return preds
+
+    def loss(
+        self,
+        batch: dict[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        # states_to includes the next-state sequence with length T + 1, so the
+        # per-transition reward targets align with the first T states and T actions.
+        # states: (B, T, state_dim)
+        # actions: (B, T, action_dim)
+        # targets: (B, T)
+        # preds: (B, T)
+        states = batch["states_to"][:, :-1, :]
+        actions = batch["actions_to"]
+        targets = batch["rewards_to"]
+        preds = self.forward(states, actions)
+        if preds.shape != targets.shape:
+            raise ValueError(
+                f"Reward predictor outputs must align with targets; got {preds.shape} vs {targets.shape}."
+            )
+
+        if self.cfg.loss_type != "mse":
+            raise ValueError(f"Unsupported reward loss_type={self.cfg.loss_type!r}.")
+        # Reduce uniformly over the full batch-time grid: mean over B * T elements.
+        loss = torch.mean((preds - targets) ** 2)
+
+        baseline_targets = targets.reshape(-1)
+        baseline_zero_mse = torch.mean(baseline_targets ** 2)
+        info = {
+            "reward_mse": loss.detach(),
+            "reward_pred_mean": preds.detach().mean(),
+            "reward_target_mean": targets.detach().mean(),
+            "reward_baseline_zero_mse": baseline_zero_mse.detach(),
+        }
+        return loss, info
+
+
+@dataclass(frozen=True)
 class NormalizationStats:
     mean: np.ndarray
     std: np.ndarray
@@ -529,6 +651,7 @@ class SopeDiffusionConfig:
     """Configuration for the canonical SOPE chunk diffusion model."""
 
     chunk_horizon: int = 8
+    trajectory_horizon: int = 60
     frame_stack: int = 2
     state_dim: int = 19
     action_dim: int = 7
@@ -700,7 +823,7 @@ class SopeDiffuser:
         self,
         initial_states: torch.Tensor,
         *,
-        max_length: int,
+        max_length: Optional[int] = None,
         guided: bool = False,
         verbose: bool = False,
         **guidance_kw: Any,
@@ -713,6 +836,12 @@ class SopeDiffuser:
             )
 
         batch_size = int(initial_states.shape[0])
+        if max_length is None:
+            max_length = int(self.cfg.trajectory_horizon)
+        else:
+            max_length = int(max_length)
+        if max_length <= 0:
+            raise ValueError(f"max_length must be positive, got {max_length}.")
         chunk_horizon = int(self.cfg.chunk_horizon)
         frame_stack = int(self.cfg.frame_stack)
         total_horizon = int(self.cfg.total_chunk_horizon)
@@ -765,6 +894,19 @@ class SopeDiffuser:
 
         return all_states, all_actions
 
+
+    def ope_estimate(
+        self, 
+        initial_states: torch.Tensor,
+        max_length: Optional[int] = None,
+        guided: bool = False,
+        verbose: bool = False,
+        **guidance_kw: Any,
+    ) -> float:
+        """Compute an OPE estimate for a full trajectory generated from an initial state."""
+        states, actions = self.generate_full_trajectory(initial_states, max_length=max_length, guided=guided, verbose=verbose, **guidance_kw)
+        #TODO: Implement OPE estimate using the MLP predictor
+        return None
 
 def cross_validate_configs(cfg_dataset: Any, cfg_diffusion: SopeDiffusionConfig) -> None:
     """Validate that dataset and diffusion configs agree on dimensions and conditioning."""

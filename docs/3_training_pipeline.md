@@ -12,7 +12,7 @@ Relevant code:
 - [src/robomimic_interface/checkpoints.py](../src/robomimic_interface/checkpoints.py)
 - [src/sope_interface/dataset.py](../src/sope_interface/dataset.py)
 
-## Summary
+## 1. Summary
 
 This note consolidates the current SOPE training and chunk-evaluation pipeline.
 
@@ -20,11 +20,12 @@ The active codepath now uses:
 - `src/utils.py` as the shared utility and path surface
 - `src/train.py` as the canonical SOPE training module
 - `src/diffusion.py` as the canonical SOPE diffusion module
-- `scripts/train_sope.py` as the CLI entrypoint for chunk-diffusion training
+- `scripts/train_sope.py` as the CLI entrypoint for diffusion training plus
+  reward-predictor training
 - `scripts/train_sope_gym.py` as the SOPE Gym state-dataset entrypoint
 - `src/eval.py` as the reusable diffusion-checkpoint evaluation path
 
-## Training Data Path
+## 2. Training Data Path
 
 By default, [`scripts/train_sope.py`](../scripts/train_sope.py) trains from rollout trajectory files under:
 
@@ -39,7 +40,7 @@ The CLI now also exposes `--dim-mults` and forwards it directly into
 `SopeDiffusionConfig.dim_mults`, so the canonical diffusion backbone width/depth
 can be changed from the training entrypoint without editing code.
 
-## Dataset And Chunking
+## 3. Dataset And Chunking
 
 The training path uses [`src/robomimic_interface/dataset.py`](../src/robomimic_interface/dataset.py) to build chunk datasets from saved rollout latents.
 
@@ -51,7 +52,7 @@ The intended chunk layout is:
 
 `train_sope.py` currently uses `source="latents"` by default.
 
-### SOPE Gym adapter
+### 3.1 SOPE Gym adapter
 
 The repository also supports SOPE Gym `pdataset`-style assets through
 [`src/sope_interface/dataset.py`](../src/sope_interface/dataset.py) and
@@ -74,7 +75,7 @@ For low-dimensional gym states such as `pdataset`, evaluation logs transition,
 state, and action RMSE only. The robomimic-specific EEF metric is skipped
 because that state layout does not expose the `robot0_eef_pos` slice.
 
-## Train Eval Split
+## 4. Train Eval Split
 
 When the input resolves to many rollout trajectory files, training now uses a trajectory-level train / eval split controlled by `train_fraction`, which defaults to `0.8`.
 
@@ -85,7 +86,7 @@ Design choices:
 - Eval uses the held-out trajectory files only.
 - When dataset normalization is enabled, the eval dataset reuses the train normalization statistics.
 
-## Scheduling
+## 5. Scheduling
 
 Training cadence is driven by count-like CLI knobs that are converted into epoch intervals inside [`src/train.py`](../src/train.py).
 
@@ -105,7 +106,69 @@ $$\begin{align}
 
 This uses floored division so evaluation runs no more often than the requested count implies.
 
-## Chunk Evaluation
+## 6. Shared Training Loop
+
+`src/train.py` now routes both diffusion and reward training through
+`train_general(...)`, which owns the shared epoch-level mechanics:
+
+- seed setup
+- device transfer
+- optimizer stepping and gradient clipping
+- scheduler stepping
+- W&B run lifecycle
+- checkpoint cadence
+- eval cadence
+
+Task-specific behavior is injected through `TrainLoopCallbacks`.
+
+Current entrypoints:
+
+- `train_sope_with_loaders(...)` validates configs, builds `SopeDiffuser`,
+  prepares diffusion callbacks, and delegates to `train_general(...)`
+- `train_rewardpred_with_loaders(...)` validates raw low-dim reward inputs,
+  builds `RewardPredictor`, prepares reward callbacks, and delegates to
+  `train_general(...)`
+- `train_reward(...)` and `train_reward_with_loaders(...)` remain as
+  compatibility aliases to `train_rewardpred(...)` and
+  `train_rewardpred_with_loaders(...)`
+
+The training hyperparameters are also split explicitly for
+[`scripts/train_sope.py`](../scripts/train_sope.py):
+
+- diffusion keeps the legacy unprefixed knobs such as `--epochs`,
+  `--batch-size`, and `--lr`
+- reward training uses `--reward-epochs`, `--reward-batch-size`, and
+  `--reward-lr`
+
+The default reward schedule is intentionally different from diffusion:
+
+- reward `epochs=100`
+- reward `batch_size=1024`
+- reward `lr=1e-3`
+
+Reward optimizer LR comes from `RewardPredictorConfig.lr`, while reward
+`epochs` and `batch_size` come from the reward-side `TrainingConfig`.
+
+## 7. Script Behavior
+
+[`scripts/train_sope.py`](../scripts/train_sope.py) now runs two training jobs
+sequentially in one invocation:
+
+1. diffusion chunk training
+2. reward-predictor training
+
+Both runs share the same checkpoint directory and rollout split, but they use
+separate W&B runs by default:
+
+- `<run_name>_diffusion`
+- `<run_name>_rewardpred`
+
+The checkpoint stems remain distinct:
+
+- `sope_diffuser_*.pt`
+- `sope_reward_predictor_*.pt`
+
+## 8. Chunk Evaluation
 
 The evaluator now supports chunk-level reconstruction metrics instead of only
 full-trajectory stitching.
@@ -128,7 +191,7 @@ Metric-space convention when `normalize=True`:
 - normalized eval-loss-path chunk RMSE is not logged under the main eval
   namespace to avoid mixing spaces
 
-### Shared train-time and standalone eval path
+### 8.1 Shared train-time and standalone eval path
 
 `src/train.py` now calls `evaluate_sope(...)` from
 [`src/eval.py`](../src/eval.py) instead of keeping a private evaluation helper.
@@ -142,7 +205,7 @@ checkpoint evaluation:
 - the returned report carries one primary metric key, which defaults to
   `gen_unnormalized`
 
-### Split compatibility
+### 8.2 Split compatibility
 
 Evaluation reproduces the same trajectory-level split rule used by training:
 
@@ -151,13 +214,13 @@ Evaluation reproduces the same trajectory-level split rule used by training:
 - when dataset normalization is enabled, eval chunks reuse normalization
   statistics computed from the train split
 
-### Recent simplifications
+### 8.3 Recent simplifications
 
 - `RMSEMetrics` is now used directly as the mutable chunk accumulator in
   [`src/eval.py`](../src/eval.py)
 - per-step RMSE arrays were removed, leaving aggregate chunk metrics only
 
-## Logging
+## 9. Logging
 
 The training loop uses a single epoch-level `tqdm` progress bar and logs:
 - batch metrics such as `train/loss`
@@ -173,11 +236,11 @@ Training-time held-out evaluation is now orchestrated directly inside
 updates the epoch progress bar postfix, and logs summary scalars without routing the metric payload back through
 [`src/train.py`](../src/train.py).
 
-## Evaluation Path
+## 10. Evaluation Path
 
 [`src/eval.py`](../src/eval.py) can load a saved SOPE diffusion checkpoint, optionally attach a robomimic policy checkpoint for guidance, autoregressively stitch full trajectories, and compare predicted latent trajectories against saved rollout trajectories.
 
-## Validation
+## 11. Validation
 
 Run:
 
@@ -185,8 +248,11 @@ Run:
 python3 -m py_compile src/utils.py src/train.py scripts/train_sope.py scripts/train_sope_gym.py src/eval.py src/robomimic_interface/dataset.py src/robomimic_interface/rollout.py src/robomimic_interface/checkpoints.py src/sope_interface/dataset.py
 python3 scripts/train_sope.py --help
 python3 scripts/train_sope_gym.py --help
+python3 scripts/train_sope.py --wandb-mode disabled --max-steps 1 --num-saves 200 --num-evals 0 --reward-epochs 1 --reward-batch-size 32 --reward-lr 1e-3
 ```
 
 The first command checks syntax for the active training stack. The CLI help
 checks validate both the rollout-backed and SOPE Gym training entrypoints
-without launching a run.
+without launching a run. The final command is a short rollout-backed smoke test
+that verifies both diffusion and reward checkpoints are written with their own
+training hyperparameters.

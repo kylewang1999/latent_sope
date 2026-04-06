@@ -6,7 +6,7 @@ Relevant code:
 - [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py)
 - [src/robomimic_interface/rollout.py](../src/robomimic_interface/rollout.py)
 
-## Summary
+## 1. Summary
 
 This note consolidates the repository workflows for staging robomimic policy artifacts and converting them into rollout trajectory datasets.
 
@@ -14,7 +14,7 @@ The current directory convention is:
 - prepared policies live under `data/policy/<policy-name>`
 - generated rollout trajectories live under `data/rollout/<policy-name>`
 
-## Policy Preparation
+## 2. Policy Preparation
 
 [`scripts/prepare_policy_hm-image.py`](../scripts/prepare_policy_hm-image.py) prepares the multi-human image diffusion policy archive under:
 
@@ -29,7 +29,7 @@ Behavior:
 - renames and stages that payload under `data/policy/`
 - removes the downloaded zip after a successful prepare
 
-## Rollout Dataset Generation
+## 3. Rollout Dataset Generation
 
 [`scripts/create_rollout_dataset.py`](../scripts/create_rollout_dataset.py) generates one rollout-latent `.h5` file per trajectory from a prepared robomimic policy under `data/policy/<policy-name>`.
 
@@ -48,7 +48,7 @@ The saved filenames now include the rollout index prefix, for example:
 
 `0007_<object_init_loc>_len60.h5`
 
-## Parallel Rollouts
+## 4. Parallel Rollouts
 
 Rollout generation uses process-level parallelism, not thread-level parallelism.
 
@@ -65,7 +65,7 @@ Each worker process owns its own:
 
 The parent process owns the single `tqdm` progress bar and updates it as futures complete.
 
-## Rendering Cadence
+## 5. Rendering Cadence
 
 The `--num-render` flag defaults to `10`.
 
@@ -77,7 +77,7 @@ $$\begin{align}
 
 when `num_render > 0`. Setting `num_render = 0` disables video rendering.
 
-## Interaction With The Dataloader
+## 6. Interaction With The Dataloader
 
 The generated `.h5` files are intended to work directly with [`src/robomimic_interface/dataset.py`](../src/robomimic_interface/dataset.py).
 
@@ -87,7 +87,7 @@ Practical constraints:
 - `source="latents"` works because the files contain `latents` and `actions`
 - `source="obs"` works when the rollout files include `obs`, which the current rollout script stores
 
-## Validation
+## 7. Validation
 
 Run:
 

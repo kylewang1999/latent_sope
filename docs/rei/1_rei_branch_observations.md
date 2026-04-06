@@ -10,7 +10,7 @@ the two current goals described in
 The summary below is based on observed source-code differences between `main`
 and `Rei`, plus the experiment filenames and commit messages in `rei/`.
 
-## High-Level Takeaway
+## 1. High-Level Takeaway
 
 `rei/` contains meaningful prototype code toward both goals, but mostly as
 adapter, rollout, scoring, and evaluation infrastructure around SOPE and
@@ -25,9 +25,9 @@ In particular:
 - the branch does **not** modify `third_party/robomimic` or `third_party/sope`
 - the branch still leaves the deepest integration gaps unresolved: timestep plumbing, sequence-shape alignment inside SOPE's guidance path, and a single reusable end-to-end value-estimation entrypoint
 
-## Meaningful Code Toward The Two Goals
+## 2. Meaningful Code Toward The Two Goals
 
-### 1. Robomimic Diffusion Guidance Adapter
+### 2.1 Robomimic Diffusion Guidance Adapter
 
 Relevant code:
 
@@ -51,7 +51,7 @@ Observed limitations:
 - It is a prototype in `src/`, but there is no evidence in `src/` that SOPE's internal guidance path was modified to call it in the exact sequence-level way described in the main note.
 - Because `third_party/sope` is unchanged, the shape-alignment issue discussed in the main note still appears unresolved at the library boundary.
 
-### 2. SOPE Chunk Sampling And Full-Trajectory Stitching
+### 2.2 SOPE Chunk Sampling And Full-Trajectory Stitching
 
 Relevant code:
 
@@ -74,7 +74,7 @@ Observed limitations:
 - Termination handling and real `end_indices` tracking are still missing.
 - There is no single reusable `estimate_value(...)` function built on top of this sampler.
 
-### 2a. Conditioning And Normalization Contract In `rei/src`
+### 2.3 Conditioning And Normalization Contract In `rei/src`
 
 Relevant code:
 
@@ -113,7 +113,7 @@ The reusable branch sampling path still relies on normalization functions for:
 - sampled-chunk unnormalization
 - carrying the next conditioning state forward in normalized space
 
-### 2b. Notebook-Specific Conditioning In `v0.2.5.14`
+### 2.4 Notebook-Specific Conditioning In `v0.2.5.14`
 
 The `v0.2.5.14` notebook family does not use the reusable `rei/src` path
 described above.
@@ -195,7 +195,7 @@ So conclusions from the `v0.2.5.14` experiments should be interpreted as
 evidence about that notebook-local sampling procedure, not about the reusable
 branch pipeline as a whole.
 
-### 3. Rollout Collection From Robomimic Policies
+### 2.5 Rollout Collection From Robomimic Policies
 
 Relevant code:
 
@@ -215,7 +215,7 @@ Why it matters:
 - These pieces support both goals by making the data path from robomimic policy to SOPE training data more reliable.
 - The terminal-state fix is especially important because losing the success state would systematically bias both training data and synthetic-return estimates.
 
-### 4. Oracle Value, Reward Scoring, And OPE Metrics
+### 2.6 Oracle Value, Reward Scoring, And OPE Metrics
 
 Relevant code:
 
@@ -239,7 +239,7 @@ Observed limitation:
 
 - This is value **scoring** and value **evaluation** infrastructure, not a finished value-estimation pipeline driven by a fully integrated guided sampler.
 
-## What `rei/` Does Not Seem To Implement Yet
+## 3. What `rei/` Does Not Seem To Implement Yet
 
 Relative to the main design note, the following still appear missing in reusable code:
 
@@ -252,12 +252,12 @@ So the right characterization is:
 - `rei/` implements important building blocks
 - `rei/` does not yet appear to complete the final integration
 
-## What Rei's Experiments Seem To Be Investigating
+## 4. What Rei's Experiments Seem To Be Investigating
 
 From the notebook names and commit messages, the experiments appear to be moving
 through several stages.
 
-### Stage A: Can latent SOPE reproduce basic synthetic trajectories at all?
+### 4.1 Stage A: Can latent SOPE reproduce basic synthetic trajectories at all?
 
 Representative experiment names:
 
@@ -274,7 +274,7 @@ What these seem to investigate:
 - whether longer training helps
 - whether certain state features, such as quaternions, hurt reconstruction quality
 
-### Stage B: Establish an unguided baseline before policy guidance
+### 4.2 Stage B: Establish an unguided baseline before policy guidance
 
 Representative experiment names:
 
@@ -285,7 +285,7 @@ What this seems to investigate:
 - whether SOPE-style synthetic rollout generation behaves sensibly on robomimic data with no guidance
 - what reconstruction or return-estimation baseline should be expected before adding target-policy steering
 
-### Stage C: Can positive or negative guidance actually steer synthetic trajectories?
+### 4.3 Stage C: Can positive or negative guidance actually steer synthetic trajectories?
 
 Representative experiment names:
 
@@ -303,7 +303,7 @@ What these seem to investigate:
 - which guidance scale and timestep regime are stable and meaningful
 - whether observed failures come from incorrect gradient scale, wrong timestep choice, or a deeper mismatch between SOPE and robomimic diffusion policies
 
-### Stage D: Is the diffuser training distribution itself the bottleneck?
+### 4.4 Stage D: Is the diffuser training distribution itself the bottleneck?
 
 Representative experiment names:
 
@@ -317,7 +317,7 @@ What these seem to investigate:
 - whether the synthetic model needs broader-quality behavior data or target-policy rollouts to support meaningful steering
 - whether data mixture changes synthetic rollout quality and OPE error more than guidance alone
 
-### Stage E: Can the method rank multiple target policies correctly?
+### 4.5 Stage E: Can the method rank multiple target policies correctly?
 
 Representative experiment names:
 
@@ -334,7 +334,7 @@ What these seem to investigate:
 - whether the branch can recover the ranking of policies by true oracle success rate or return
 - whether guidance helps enough to improve policy selection, not just single-policy return estimation
 
-### Stage F: Why does guidance fail to differentiate policies?
+### 4.6 Stage F: Why does guidance fail to differentiate policies?
 
 Representative experiment names:
 
@@ -355,7 +355,7 @@ What these seem to investigate:
 - whether simpler scorers behave better than the robomimic diffusion-score proxy
 - whether poor OPE performance is caused by low action diversity, weak gradients, or scorer miscalibration rather than by the chunk diffuser alone
 
-### Stage G: Does the same debugging story hold outside Lift / robomimic?
+### 4.7 Stage G: Does the same debugging story hold outside Lift / robomimic?
 
 Representative experiment names:
 
@@ -370,7 +370,7 @@ What these seem to investigate:
 - whether a D4RL control setting exposes the same failure modes more clearly
 - whether cross-policy ranking and guidance diagnostics transfer to a simpler benchmark
 
-## Overall Read On Rei's Research Direction
+## 5. Overall Read On Rei's Research Direction
 
 At this stage, Rei's branch does **not** look like it is merely tuning scripts.
 It is building the infrastructure needed to ask a focused research question:
@@ -380,9 +380,9 @@ robomimic diffusion policy, and if not, is the failure caused by scorer
 construction, sampler integration, training-data support, or policy
 indistinguishability?
 
-## Follow-Up Questions
+## 6. Follow-Up Questions
 
-### 1. Why Are Quaternions Involved?
+### 6.1 Why Are Quaternions Involved?
 
 Quaternions are involved because Rei's Lift setup initially uses robomimic's
 full low-dimensional observation and action interface, which includes rotation
@@ -427,7 +427,7 @@ but the diffusion model samples in unconstrained Euclidean space
 $\mathbb{R}^4$. That mismatch is exactly the concern described in Rei's
 architecture and blow-up notes.
 
-### 2. Is `small_mlp_scoreres` Implemented In Any `src/` Files?
+### 6.2 Is `small_mlp_scoreres` Implemented In Any `src/` Files?
 
 Not in `rei/src/`. The name appears to refer to the experiment
 `MVP_v0.2.5.8_small_mlp_scorers`, and the implementation lives in experiment
@@ -451,7 +451,7 @@ So the precise answer is:
 - therefore it should be treated as exploratory code, not branch-level source
   infrastructure
 
-### 3. Important Policy-Eval Acronyms / Terms In Rei's Context
+### 6.3 Important Policy-Eval Acronyms / Terms In Rei's Context
 
 Below are the main policy-eval terms that show up in Rei's branch and notes.
 

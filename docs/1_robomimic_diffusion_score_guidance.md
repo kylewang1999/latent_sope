@@ -12,7 +12,7 @@ Relevant code:
 - SOPE chunk diffuser wrapper in this repo: [`src/latent_sope/diffusion/sope_diffuser.py`](../src/latent_sope/diffusion/sope_diffuser.py)
 - Robomimic latent / feature hook helper: [`src/latent_sope/robomimic_interface/rollout.py`](../src/latent_sope/robomimic_interface/rollout.py)
 
-## Summary
+## 1. Summary
 
 Robomimic's diffusion policy does not expose an exact tractable $\\log \pi(a \mid s)$ or $\\nabla_a \log \pi(a \mid s)$ API. The model is trained as an epsilon predictor: given noisy actions $a_t$, timestep $t$, and observation conditioning, it predicts the forward-process noise $\\hat\\epsilon_\\theta(a_t, t, s)$.
 
@@ -26,7 +26,7 @@ $$\begin{align}
 
 This is the object that should back SOPE's `policy.grad_log_prob(...)` interface for diffusion policies.
 
-## What Robomimic Actually Trains
+## 2. What Robomimic Actually Trains
 
 Robomimic's diffusion policy:
 
@@ -46,7 +46,7 @@ by default.
 
 That means the robomimic model is fundamentally a sequence model over action chunks, not a per-step conditional density model.
 
-## What SOPE Expects
+## 3. What SOPE Expects
 
 SOPE's guided diffusion path calls `gradlog_diffusion(...)` in [`third_party/sope/opelab/core/baselines/diffusion/diffusion.py`](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py). That helper currently:
 
@@ -65,7 +65,7 @@ $$\begin{align}
 
 SOPE's own `DiffusionPolicy` wrapper in [`third_party/sope/opelab/core/policy.py`](../third_party/sope/opelab/core/policy.py) already implements this idea by turning the diffusion model output into a score-like term.
 
-## Recommended Adapter Contract
+## 4. Recommended Adapter Contract
 
 Use the raw robomimic `PolicyAlgo`, not just `RolloutPolicy`, because the guidance path needs direct access to:
 
@@ -95,7 +95,7 @@ $$\begin{align}
 
 where $\\bar{\alpha}_t$ comes from robomimic's diffusion scheduler.
 
-## Timestep Mapping
+## 5. Timestep Mapping
 
 SOPE chunk diffusion and robomimic policy diffusion do not necessarily use the same number of diffusion steps.
 
@@ -113,7 +113,7 @@ t_{\text{rm}}
 
 This is not mathematically exact across different beta schedules, but it is the minimal consistent mapping when the two samplers do not share a schedule object.
 
-## Shape Mismatch: Exact Vs Approximate Integration
+## 6. Shape Mismatch: Exact Vs Approximate Integration
 
 This is the main caveat.
 
@@ -128,7 +128,7 @@ Those interfaces are not exactly aligned.
 
 There are two integration options:
 
-### Option A: Sequence-level guidance
+### 6.1 Option A: Sequence-level guidance
 
 This is the principled version.
 
@@ -142,7 +142,7 @@ into the robomimic score adapter.
 
 Then compute guidance over the whole action sequence and write the resulting action-window gradient back into the SOPE chunk tensor.
 
-### Option B: Single-step approximation
+### 6.2 Option B: Single-step approximation
 
 This is simpler but approximate.
 
@@ -153,7 +153,7 @@ Force the robomimic diffusion policy into a single-step setting, for example:
 
 Then the robomimic policy behaves much more like the per-step contract SOPE currently assumes.
 
-## Action Normalization Caveat
+## 7. Action Normalization Caveat
 
 Robomimic expects diffusion-policy actions to be normalized to $[-1, 1]$. The training code checks this explicitly in [`third_party/robomimic/robomimic/algo/diffusion_policy.py`](../third_party/robomimic/robomimic/algo/diffusion_policy.py).
 
@@ -166,7 +166,7 @@ That creates a mismatch unless one of the following is true:
 
 The safer implementation is to keep robomimic guidance in the same normalized action space that the robomimic diffusion model was trained on.
 
-## Observation Conditioning Caveat
+## 8. Observation Conditioning Caveat
 
 Robomimic's observation conditioning is not just a flat state vector. The policy:
 
@@ -178,7 +178,7 @@ If SOPE uses the same encoder latents as its `z_t`, those latents can serve as t
 
 If SOPE instead stores raw low-dimensional observations in `z_t`, then the adapter must recreate robomimic's observation-conditioning path before evaluating the denoiser.
 
-## Minimal Implementation Sketch
+## 9. Minimal Implementation Sketch
 
 The adapter logic should look like:
 
@@ -212,7 +212,7 @@ class RobomimicDiffusionScore:
 
 This sketch is sequence-level. It is not a correct drop-in for SOPE's current flattened `(N \cdot T, D)` interface without also changing the SOPE guidance call site.
 
-## Current Repository Status
+## 10. Current Repository Status
 
 This repository already notes that guided sampling is not wired end to end in [`src/latent_sope/diffusion/sope_diffuser.py`](../src/latent_sope/diffusion/sope_diffuser.py). In particular:
 
@@ -227,7 +227,7 @@ So the missing work is not only "extract a score from robomimic." It is also:
 - align action normalization
 - pass the current SOPE diffusion timestep into the policy score path
 
-## Validation To Run After Implementing
+## 11. Validation To Run After Implementing
 
 The smallest meaningful checks are:
 
