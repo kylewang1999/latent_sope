@@ -199,7 +199,7 @@ def load_diffusion_checkpoint(
     behavior_policy: Optional[Any] = None,
 ) -> tuple[Any, dict[str, Any]]:
     checkpoint_path = Path(checkpoint_path)
-    payload = torch.load(str(checkpoint_path), map_location="cpu")
+    payload = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     cfg_diffusion = SopeDiffusionConfig(**payload["diffusion_config"])
 
     stats_payload = payload.get("normalization_stats")
@@ -228,7 +228,7 @@ def load_reward_checkpoint(
     device: Optional[str] = None,
 ) -> tuple[RewardPredictor, dict[str, Any]]:
     checkpoint_path = Path(checkpoint_path)
-    payload = torch.load(str(checkpoint_path), map_location="cpu")
+    payload = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     cfg_reward = RewardPredictorConfig(**payload["reward_config"])
     predictor = RewardPredictor(
         cfg_reward,

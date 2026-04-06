@@ -19,7 +19,7 @@ from src.sope_interface.dataset import (
     summarize_sope_gym_episodes,
     train_eval_split_sope_gym_episodes,
 )
-from src.train import TrainingConfig, _assign_dataset_stats, train_sope_with_loaders
+from src.train import TrainingConfig, _assign_dataset_stats, train_sope
 from src.utils import PATHS, make_log_dir
 
 
@@ -178,7 +178,7 @@ def main() -> None:
     if bundle.normalization is not None:
         print("normalization_json: found")
 
-    train_sope_with_loaders(
+    train_sope(
         cfg_dataset=cfg_dataset,
         cfg_diffusion=cfg_diffusion,
         cfg_training=cfg_training,

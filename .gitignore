@@ -14,7 +14,7 @@ scripts/*
 logs*/
 *datasets/
 wandb/
-
+tests/
 
 *.hdf5
 *.txt

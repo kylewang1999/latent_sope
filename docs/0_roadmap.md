@@ -40,7 +40,7 @@ Suggestions from Stephen:
    treats the historical prefix as state-conditioning only, matching the
    original SOPE conditioning scheme more closely. Prefix action channels are
    removed from the supervised target and prefix-step loss weights are zeroed.
- - See [docs/8_sope_diffusion_contract.md](./8_sope_diffusion_contract.md)
+ - See [docs/6_sope_diffusion_contract.md](./6_sope_diffusion_contract.md)
    for the merged note covering chunk-field mapping, DDPM `q` vs `p_\theta`,
    and how `apply_conditioning(...)` acts around the denoiser and reverse
    process.

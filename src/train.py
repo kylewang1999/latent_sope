@@ -201,6 +201,8 @@ def _format_reward_info_metrics(info: Any) -> dict[str, float]:
     return {f"reward_train/{key}": value for key, value in _flatten_scalar_metrics(info).items()}
 
 
+# TODO: fold this logic inside _make_sope_train_callbacks._compute_loss. That's the only place where it's used.
+# Also; why need this complicated try-except logic?
 def _call_loss(
     diffuser: Any,
     batch_t: dict[str, torch.Tensor],
@@ -281,6 +283,18 @@ def _assign_dataset_stats(dataset: Any, stats: Optional[DatasetNormalizationStat
         dataset.stats = stats
     if hasattr(dataset, "normalize"):
         dataset.normalize = stats is not None
+
+
+def _extract_dataset_stats(dataset: Any) -> Optional["DatasetNormalizationStats"]:
+    if dataset is None:
+        return None
+    if isinstance(dataset, ConcatDataset):
+        for subdataset in dataset.datasets:
+            sub_stats = _extract_dataset_stats(subdataset)
+            if sub_stats is not None:
+                return sub_stats
+        return None
+    return getattr(dataset, "stats", None)
 
 
 def _stringify_refs(refs: Optional[Sequence[Any]]) -> list[str]:
@@ -623,8 +637,11 @@ def _make_sope_train_callbacks(
             compute_batch_rmse=compute_batch_rmse,
         )
         if isinstance(loss_out, tuple):
-            return loss_out
-        return loss_out, {}
+            loss, info = loss_out
+            return loss, info
+        else:
+            loss = loss_out
+            return loss, {}
 
     def _format_batch_metrics(
         info: dict[str, Any],
@@ -714,21 +731,64 @@ def _make_sope_train_callbacks(
     )
 
 
-def train_sope_with_loaders(
-    *,
+def train_sope(
     cfg_dataset: Any,
     cfg_diffusion: Any,
     cfg_training: TrainingConfig,
-    loader: torch.utils.data.DataLoader,
-    eval_loader: Optional[torch.utils.data.DataLoader],
-    stats: Optional["DatasetNormalizationStats"],
+    *,
+    loader: Optional[torch.utils.data.DataLoader] = None,
+    eval_loader: Optional[torch.utils.data.DataLoader] = None,
+    stats: Optional["DatasetNormalizationStats"] = None,
     train_data_refs: Optional[Sequence[Any]] = None,
     eval_data_refs: Optional[Sequence[Any]] = None,
 ) -> None:
+    """Train chunk diffusion with phase-local TrainingConfig epochs, batch size, and LR."""
     from src.diffusion import SopeDiffuser
 
-    _validate_sope_training_inputs(cfg_dataset, cfg_diffusion)
     device_str, _ = _resolve_training_device(cfg_training)
+    if loader is None:
+        from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
+
+        train_paths, eval_paths = _split_rollout_paths(
+            paths=cfg_training.data,
+            seed=cfg_training.seed,
+            train_fraction=cfg_training.train_fraction,
+        )
+
+        loader, stats = make_rollout_chunk_dataloader(
+            paths=train_paths,
+            config=cfg_dataset,
+            batch_size=cfg_training.batch_size,
+            num_workers=cfg_training.num_workers,
+            shuffle=True,
+            drop_last=True,
+            encoder=None,
+            obs_keys=None,
+            encoder_device=device_str,
+        )
+        eval_loader = None
+        if eval_paths:
+            eval_loader, _ = make_rollout_chunk_dataloader(
+                paths=eval_paths,
+                config=cfg_dataset,
+                batch_size=cfg_training.batch_size,
+                num_workers=cfg_training.num_workers,
+                shuffle=False,
+                drop_last=False,
+                encoder=None,
+                obs_keys=None,
+                encoder_device=device_str,
+            )
+            _assign_dataset_stats(eval_loader.dataset, stats if cfg_dataset.normalize else None)
+        train_data_refs = train_paths
+        eval_data_refs = eval_paths
+    else:
+        if stats is None:
+            stats = _extract_dataset_stats(loader.dataset)
+        if eval_loader is not None and getattr(cfg_dataset, "normalize", False):
+            _assign_dataset_stats(eval_loader.dataset, stats)
+
+    _validate_sope_training_inputs(cfg_dataset, cfg_diffusion)
     diffuser = SopeDiffuser(
         cfg=cfg_diffusion,
         normalization_stats=stats,
@@ -748,59 +808,6 @@ def train_sope_with_loaders(
         cfg_training=cfg_training,
         callbacks=callbacks,
         eval_loader=eval_loader,
-    )
-
-
-def train_sope(
-    cfg_dataset: RolloutChunkDatasetConfig,
-    cfg_diffusion: Any,
-    cfg_training: TrainingConfig,
-) -> None:
-    """Train chunk diffusion with phase-local TrainingConfig epochs, batch size, and LR."""
-    from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
-
-    device_str, _ = _resolve_training_device(cfg_training)
-
-    train_paths, eval_paths = _split_rollout_paths(
-        paths=cfg_training.data,
-        seed=cfg_training.seed,
-        train_fraction=cfg_training.train_fraction,
-    )
-
-    loader, stats = make_rollout_chunk_dataloader(
-        paths=train_paths,
-        config=cfg_dataset,
-        batch_size=cfg_training.batch_size,
-        num_workers=cfg_training.num_workers,
-        shuffle=True,
-        drop_last=True,
-        encoder=None,
-        obs_keys=None,
-        encoder_device=device_str,
-    )
-    eval_loader = None
-    if eval_paths:
-        eval_loader, _ = make_rollout_chunk_dataloader(
-            paths=eval_paths,
-            config=cfg_dataset,
-            batch_size=cfg_training.batch_size,
-            num_workers=cfg_training.num_workers,
-            shuffle=False,
-            drop_last=False,
-            encoder=None,
-            obs_keys=None,
-            encoder_device=device_str,
-        )
-        _assign_dataset_stats(eval_loader.dataset, stats if cfg_dataset.normalize else None)
-    train_sope_with_loaders(
-        cfg_dataset=cfg_dataset,
-        cfg_diffusion=cfg_diffusion,
-        cfg_training=cfg_training,
-        loader=loader,
-        eval_loader=eval_loader,
-        stats=stats,
-        train_data_refs=train_paths,
-        eval_data_refs=eval_paths,
     )
 
 
@@ -951,23 +958,66 @@ def _make_rewardpred_train_callbacks(
     )
 
 
-def train_rewardpred_with_loaders(
-    *,
+def train_rewardpred(
     cfg_dataset: Any,
     cfg_reward: Any,
     cfg_training: TrainingConfig,
-    loader: torch.utils.data.DataLoader,
-    eval_loader: Optional[torch.utils.data.DataLoader],
+    *,
+    loader: Optional[torch.utils.data.DataLoader] = None,
+    eval_loader: Optional[torch.utils.data.DataLoader] = None,
     train_data_refs: Optional[Sequence[Any]] = None,
     eval_data_refs: Optional[Sequence[Any]] = None,
 ) -> None:
+    """Train the reward predictor with phase-local epochs/batch size and RewardPredictorConfig.lr."""
     from src.diffusion import RewardPredictor
 
-    _validate_rewardpred_training_inputs(cfg_dataset, cfg_reward)
     device_str, _ = _resolve_training_device(cfg_training)
+    reward_dataset_cfg = (
+        replace(cfg_dataset, normalize=False)
+        if bool(getattr(cfg_dataset, "normalize", False))
+        else cfg_dataset
+    )
+
+    if loader is None:
+        from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
+
+        train_paths, eval_paths = _split_rollout_paths(
+            paths=cfg_training.data,
+            seed=cfg_training.seed,
+            train_fraction=cfg_training.train_fraction,
+        )
+
+        loader, _ = make_rollout_chunk_dataloader(
+            paths=train_paths,
+            config=reward_dataset_cfg,
+            batch_size=cfg_training.batch_size,
+            num_workers=cfg_training.num_workers,
+            shuffle=True,
+            drop_last=True,
+            encoder=None,
+            obs_keys=None,
+            encoder_device=device_str,
+        )
+        eval_loader = None
+        if eval_paths:
+            eval_loader, _ = make_rollout_chunk_dataloader(
+                paths=eval_paths,
+                config=reward_dataset_cfg,
+                batch_size=cfg_training.batch_size,
+                num_workers=cfg_training.num_workers,
+                shuffle=False,
+                drop_last=False,
+                encoder=None,
+                obs_keys=None,
+                encoder_device=device_str,
+            )
+        train_data_refs = train_paths
+        eval_data_refs = eval_paths
+
+    _validate_rewardpred_training_inputs(reward_dataset_cfg, cfg_reward)
     reward_predictor = RewardPredictor(cfg_reward, device=device_str)
     callbacks = _make_rewardpred_train_callbacks(
-        cfg_dataset=cfg_dataset,
+        cfg_dataset=reward_dataset_cfg,
         cfg_reward=cfg_reward,
         cfg_training=cfg_training,
         train_data_refs=train_data_refs,
@@ -982,61 +1032,10 @@ def train_rewardpred_with_loaders(
     )
 
 
-def train_rewardpred(
-    cfg_dataset: RolloutChunkDatasetConfig,
-    cfg_reward: Any,
-    cfg_training: TrainingConfig,
-) -> None:
-    """Train the reward predictor with phase-local epochs/batch size and RewardPredictorConfig.lr."""
-    from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
-
-    device_str, _ = _resolve_training_device(cfg_training)
-    reward_dataset_cfg = replace(cfg_dataset, normalize=False)
-
-    train_paths, eval_paths = _split_rollout_paths(
-        paths=cfg_training.data,
-        seed=cfg_training.seed,
-        train_fraction=cfg_training.train_fraction,
-    )
-
-    loader, _ = make_rollout_chunk_dataloader(
-        paths=train_paths,
-        config=reward_dataset_cfg,
-        batch_size=cfg_training.batch_size,
-        num_workers=cfg_training.num_workers,
-        shuffle=True,
-        drop_last=True,
-        encoder=None,
-        obs_keys=None,
-        encoder_device=device_str,
-    )
-    eval_loader = None
-    if eval_paths:
-        eval_loader, _ = make_rollout_chunk_dataloader(
-            paths=eval_paths,
-            config=reward_dataset_cfg,
-            batch_size=cfg_training.batch_size,
-            num_workers=cfg_training.num_workers,
-            shuffle=False,
-            drop_last=False,
-            encoder=None,
-            obs_keys=None,
-            encoder_device=device_str,
-        )
-
-    train_rewardpred_with_loaders(
-        cfg_dataset=reward_dataset_cfg,
-        cfg_reward=cfg_reward,
-        cfg_training=cfg_training,
-        loader=loader,
-        eval_loader=eval_loader,
-        train_data_refs=train_paths,
-        eval_data_refs=eval_paths,
-    )
-
-
 train_reward = train_rewardpred
-train_reward_with_loaders = train_rewardpred_with_loaders
+train_sope_with_loaders = train_sope
+train_rewardpred_with_loaders = train_rewardpred
+train_reward_with_loaders = train_rewardpred
 
 
 __all__ = [

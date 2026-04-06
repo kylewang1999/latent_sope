@@ -306,9 +306,9 @@ The repository-specific reward predictor is implemented in:
 - [`src/diffusion.py`](../src/diffusion.py):
   `RewardPredictorConfig` and `RewardPredictor`
 - [`src/train.py`](../src/train.py):
-  `train_rewardpred(...)`, `train_rewardpred_with_loaders(...)`, and
-  compatibility aliases `train_reward(...)` /
-  `train_reward_with_loaders(...)`
+  `train_rewardpred(...)` as the canonical reward entrypoint, plus
+  compatibility aliases `train_reward(...)`,
+  `train_rewardpred_with_loaders(...)`, and `train_reward_with_loaders(...)`
 - [`scripts/train_sope.py`](../scripts/train_sope.py):
   separate reward hyperparameters, where reward `lr` comes from
   `RewardPredictorConfig.lr` via `--reward-lr`, while reward `epochs` and

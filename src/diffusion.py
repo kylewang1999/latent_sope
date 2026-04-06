@@ -17,10 +17,10 @@ _ROBOMIMIC_ROOT = Path(__file__).resolve().parents[1] / "third_party" / "robomim
 if str(_ROBOMIMIC_ROOT) not in sys.path:
     sys.path.append(str(_ROBOMIMIC_ROOT))
 
-from third_party.robomimic.robomimic.models.diffusion_policy_nets import (  # type: ignore
+from third_party.robomimic.robomimic.models.diffusion_policy_nets import (
     ConditionalUnet1D,
 )
-from third_party.sope.opelab.core.baselines.diffusion.diffusion import (  # type: ignore
+from third_party.sope.opelab.core.baselines.diffusion.diffusion import (
     GaussianDiffusion,
     Sample,
     gradlog,
@@ -28,7 +28,7 @@ from third_party.sope.opelab.core.baselines.diffusion.diffusion import (  # type
     get_schedule_multiplier,
     make_timesteps,
 )
-import third_party.sope.opelab.core.baselines.diffusion.utils as diffusion_utils  # type: ignore
+import third_party.sope.opelab.core.baselines.diffusion.utils as diffusion_utils
 
 
 @dataclass(frozen=True)
@@ -652,6 +652,7 @@ class SopeDiffusionConfig:
 
     chunk_horizon: int = 8
     trajectory_horizon: int = 60
+    ope_gamma: float = 0.99
     frame_stack: int = 2
     state_dim: int = 19
     action_dim: int = 7
@@ -828,7 +829,29 @@ class SopeDiffuser:
         verbose: bool = False,
         **guidance_kw: Any,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Autoregressively generate a full state-action trajectory from an initial state."""
+        """Autoregressively generate a full unnormalized state-action trajectory.
+
+        Normalization contract:
+
+        1. `initial_states` are expected in the same unnormalized state space used by
+           the dataset / rollout latents.
+        2. To build the first FiLM condition, the code concatenates each initial state
+           with a zero action, applies the transition-level normalizer, and keeps only
+           the normalized state slice. This matches the state marginal implied by the
+           full `(state, action)` normalization statistics.
+        3. Diffusion denoising and chunk sampling operate entirely in normalized
+           transition space.
+        4. Returned rollout states and actions are unnormalized by applying
+           `self.unnormalizer(...)` to the sampled transitions before splitting the
+           state and action channels.
+        5. Autoregressive reconditioning uses the normalized state slice from
+           `sample.trajectories[:, -frame_stack:, :state_dim]` directly. It does not
+           renormalize states from the unnormalized rollout buffers.
+
+        When `normalization_stats` is `None`, `self.normalizer` and
+        `self.unnormalizer` are identity maps, so the same logic still applies with
+        no numerical change.
+        """
         if self.cfg.conditioning_mode == "none":
             raise NotImplementedError(
                 "generate_full_trajectory does not support conditioning_mode='none'. "
@@ -894,19 +917,89 @@ class SopeDiffuser:
 
         return all_states, all_actions
 
-
     def ope_estimate(
-        self, 
+        self,
         initial_states: torch.Tensor,
+        reward_predictor: RewardPredictor | Any,
         max_length: Optional[int] = None,
         guided: bool = False,
         verbose: bool = False,
         **guidance_kw: Any,
     ) -> float:
-        """Compute an OPE estimate for a full trajectory generated from an initial state."""
-        states, actions = self.generate_full_trajectory(initial_states, max_length=max_length, guided=guided, verbose=verbose, **guidance_kw)
-        #TODO: Implement OPE estimate using the MLP predictor
-        return None
+        """Estimate mean discounted return for generated trajectories with a reward model."""
+        if not hasattr(reward_predictor, "predict"):
+            raise TypeError(
+                "reward_predictor must expose a predict(states, actions) method."
+            )
+
+        ope_gamma = float(self.cfg.ope_gamma)
+        if not (0.0 < ope_gamma <= 1.0):
+            raise ValueError(
+                f"ope_gamma must satisfy 0 < ope_gamma <= 1, got {self.cfg.ope_gamma}."
+            )
+
+        predictor_state_dim = getattr(reward_predictor, "state_dim", None)
+        if predictor_state_dim is not None and int(predictor_state_dim) != self.state_dim:
+            raise ValueError(
+                "Reward predictor state_dim must match SopeDiffuser state_dim "
+                f"({predictor_state_dim} != {self.state_dim})."
+            )
+
+        predictor_action_dim = getattr(reward_predictor, "action_dim", None)
+        if predictor_action_dim is not None and int(predictor_action_dim) != self.action_dim:
+            raise ValueError(
+                "Reward predictor action_dim must match SopeDiffuser action_dim "
+                f"({predictor_action_dim} != {self.action_dim})."
+            )
+
+        states, actions = self.generate_full_trajectory(
+            initial_states,
+            max_length=max_length,
+            guided=guided,
+            verbose=verbose,
+            **guidance_kw,
+        )
+        if states.shape[:2] != actions.shape[:2]:
+            raise ValueError(
+                "Generated states and actions must share batch and horizon dimensions; "
+                f"got {states.shape} vs {actions.shape}."
+            )
+        if states.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"Generated state dim mismatch: expected {self.state_dim}, got {states.shape[-1]}."
+            )
+        if actions.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"Generated action dim mismatch: expected {self.action_dim}, got {actions.shape[-1]}."
+            )
+
+        reward_preds = reward_predictor.predict(states, actions)
+        reward_preds_t = (
+            reward_preds
+            if torch.is_tensor(reward_preds)
+            else torch.as_tensor(reward_preds, dtype=torch.float32)
+        )
+        reward_preds_t = reward_preds_t.to(dtype=torch.float32)
+        if reward_preds_t.ndim == 3 and reward_preds_t.shape[-1] == 1:
+            reward_preds_t = reward_preds_t.squeeze(-1)
+        expected_shape = (states.shape[0], states.shape[1])
+        if tuple(reward_preds_t.shape) != expected_shape:
+            raise ValueError(
+                "Reward predictor outputs must have shape (batch, horizon); "
+                f"expected {expected_shape}, got {tuple(reward_preds_t.shape)}."
+            )
+
+        discounts = torch.pow(
+            torch.full(
+                (states.shape[1],),
+                ope_gamma,
+                dtype=reward_preds_t.dtype,
+                device=reward_preds_t.device,
+            ),
+            torch.arange(states.shape[1], device=reward_preds_t.device),
+        )
+        trajectory_returns = torch.sum(reward_preds_t * discounts.unsqueeze(0), dim=1)
+        return float(trajectory_returns.mean().item())
 
 def cross_validate_configs(cfg_dataset: Any, cfg_diffusion: SopeDiffusionConfig) -> None:
     """Validate that dataset and diffusion configs agree on dimensions and conditioning."""
