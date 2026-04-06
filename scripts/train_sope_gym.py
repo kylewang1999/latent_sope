@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.sope_diffuser import SopeDiffusionConfig
+from src.diffusion import SopeDiffusionConfig
 from src.sope_interface.dataset import (
     SopeGymChunkDatasetConfig,
     load_sope_gym_dataset,
@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         nargs="+",
         default=(1, 2),
-        help="TemporalUnet channel multipliers, e.g. --dim-mults 1 2 4.",
+        help="Robomimic ConditionalUnet1D width multipliers, e.g. --dim-mults 1 2 4.",
     )
     parser.add_argument("--diffusion-steps", type=int, default=256)
     parser.add_argument("--attention", action=argparse.BooleanOptionalAction, default=True)

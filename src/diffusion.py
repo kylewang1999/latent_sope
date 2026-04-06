@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
 import numpy as np
 import torch
@@ -29,7 +29,38 @@ from third_party.sope.opelab.core.baselines.diffusion.diffusion import (  # type
     make_timesteps,
 )
 import third_party.sope.opelab.core.baselines.diffusion.utils as diffusion_utils  # type: ignore
-from src.sope_diffuser import NormalizationStats, make_normalizers
+
+
+@dataclass(frozen=True)
+class NormalizationStats:
+    mean: np.ndarray
+    std: np.ndarray
+
+
+def make_normalizers(
+    stats: Optional[NormalizationStats],
+) -> Tuple[Callable[[Any], Any], Callable[[Any], Any]]:
+    if stats is None:
+        return (lambda x: x), (lambda x: x)
+
+    mean = stats.mean
+    std = stats.std
+
+    def _norm(x: Any) -> Any:
+        if torch.is_tensor(x):
+            mean_t = torch.as_tensor(mean, device=x.device, dtype=x.dtype)
+            std_t = torch.as_tensor(std, device=x.device, dtype=x.dtype)
+            return (x - mean_t) / std_t
+        return (x - mean) / std
+
+    def _unnorm(x: Any) -> Any:
+        if torch.is_tensor(x):
+            mean_t = torch.as_tensor(mean, device=x.device, dtype=x.dtype)
+            std_t = torch.as_tensor(std, device=x.device, dtype=x.dtype)
+            return x * std_t + mean_t
+        return x * std + mean
+
+    return _norm, _unnorm
 
 
 def _film_sample_fn(
@@ -494,8 +525,8 @@ class FilmGaussianDiffusion(GaussianDiffusion):
 
 
 @dataclass(frozen=True)
-class FilmDiffusionConfig:
-    """Configuration for FiLM-conditioned trajectory chunk diffusion."""
+class SopeDiffusionConfig:
+    """Configuration for the canonical SOPE chunk diffusion model."""
 
     chunk_horizon: int = 8
     frame_stack: int = 2
@@ -523,7 +554,7 @@ class FilmDiffusionConfig:
     diffuser_eef_pos_only: bool = False
     conditioning_mode: Literal["prefix_states", "none"] = "prefix_states"
 
-    conditioning_style: Literal["film"] = "film"
+    conditioning_style: Literal["film"] = "film" # deprecated; now film conditoining is canonical
     backbone_base_dim: int = 256
 
     @property
@@ -532,18 +563,18 @@ class FilmDiffusionConfig:
         return self.chunk_horizon
 
 
-class FilmDiffuser:
-    """FiLM-conditioned chunk diffusion wrapper using robomimic's ConditionalUnet1D."""
+class SopeDiffuser:
+    """Canonical SOPE chunk diffusion wrapper using robomimic's ConditionalUnet1D."""
 
     def __init__(
         self,
-        cfg: FilmDiffusionConfig,
+        cfg: SopeDiffusionConfig,
         normalization_stats: Optional[NormalizationStats] = None,
         device: str = "cuda",
         policy: Optional[Any] = None,
         behavior_policy: Optional[Any] = None,
     ) -> None:
-        """Build the FiLM-conditioned backbone, DDPM wrapper, and normalization helpers."""
+        """Build the canonical backbone, DDPM wrapper, and normalization helpers."""
         self.cfg = cfg
         self.device = torch.device(device)
         self.state_dim = int(cfg.state_dim)
@@ -612,7 +643,7 @@ class FilmDiffuser:
         return torch.cat([batch["states_to"][:, :-1, :], future_actions], dim=-1)
 
     def make_optimizer(self) -> torch.optim.Optimizer:
-        """Construct the default optimizer for the FiLM diffusion model."""
+        """Construct the default optimizer for the canonical diffusion model."""
         return torch.optim.Adam(
             self.diffusion.parameters(),
             lr=self.cfg.lr,
@@ -632,7 +663,7 @@ class FilmDiffuser:
         *,
         compute_batch_rmse: bool = False,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Compute the FiLM-conditioned diffusion loss for one batch of chunks."""
+        """Compute the canonical diffusion loss for one batch of chunks."""
         del cond
         x = self._build_training_target(batch)
         film_cond = self.make_cond(batch)
@@ -655,7 +686,7 @@ class FilmDiffuser:
         return_chain: bool = False,
         **kwargs: Any,
     ) -> Any:
-        """Sample future transition chunks from the FiLM-conditioned diffusion model."""
+        """Sample future transition chunks from the canonical diffusion model."""
         shape = (num_samples, self.cfg.total_chunk_horizon, self.transition_dim)
         return self.diffusion.conditional_sample(
             shape,
@@ -665,12 +696,81 @@ class FilmDiffuser:
             **kwargs,
         )
 
+    def generate_full_trajectory(
+        self,
+        initial_states: torch.Tensor,
+        *,
+        max_length: int,
+        guided: bool = False,
+        verbose: bool = False,
+        **guidance_kw: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Autoregressively generate a full state-action trajectory from an initial state."""
+        if self.cfg.conditioning_mode == "none":
+            raise NotImplementedError(
+                "generate_full_trajectory does not support conditioning_mode='none'. "
+                "Use chunk-level evaluation for the EEF-only debug path."
+            )
 
-def cross_validate_configs(cfg_dataset: Any, cfg_diffusion: FilmDiffusionConfig) -> None:
-    """Validate that dataset and FiLM diffusion configs agree on dimensions and conditioning."""
-    if not isinstance(cfg_diffusion, FilmDiffusionConfig):
+        batch_size = int(initial_states.shape[0])
+        chunk_horizon = int(self.cfg.chunk_horizon)
+        frame_stack = int(self.cfg.frame_stack)
+        total_horizon = int(self.cfg.total_chunk_horizon)
+
+        all_states = np.zeros((batch_size, max_length, self.state_dim), dtype=np.float32)
+        all_actions = np.zeros((batch_size, max_length, self.action_dim), dtype=np.float32)
+
+        initial_states = initial_states.to(self.device)
+        dummy_actions = torch.zeros(
+            batch_size,
+            self.action_dim,
+            device=self.device,
+            dtype=initial_states.dtype,
+        )
+        initial_transition = torch.cat([initial_states, dummy_actions], dim=-1)
+        initial_state_norm = self.normalizer(initial_transition)[:, : self.state_dim]
+        cond_states = initial_state_norm.unsqueeze(1).expand(-1, frame_stack, -1).clone()
+
+        total_generated = 0
+        self.diffusion.eval()
+        with torch.no_grad():
+            while total_generated < max_length:
+                steps_to_add = min(chunk_horizon, max_length - total_generated)
+                cond = cond_states.reshape(batch_size, -1)
+                sample = self.diffusion.conditional_sample(
+                    shape=(batch_size, total_horizon, self.transition_dim),
+                    cond=cond,
+                    guided=guided,
+                    verbose=verbose,
+                    **guidance_kw,
+                )
+                chunk = self.unnormalizer(sample.trajectories)
+                gen_states = chunk[:, :, : self.state_dim]
+                gen_actions = chunk[:, :, self.state_dim :]
+
+                t_end = total_generated + steps_to_add
+                all_states[:, total_generated:t_end, :] = (
+                    gen_states[:, :steps_to_add, :].detach().cpu().numpy()
+                )
+                all_actions[:, total_generated:t_end, :] = (
+                    gen_actions[:, :steps_to_add, :].detach().cpu().numpy()
+                )
+                total_generated = t_end
+
+                if total_generated >= max_length:
+                    break
+
+                # Recondition the next chunk on the last generated normalized states.
+                cond_states = sample.trajectories[:, -frame_stack:, : self.state_dim].clone()
+
+        return all_states, all_actions
+
+
+def cross_validate_configs(cfg_dataset: Any, cfg_diffusion: SopeDiffusionConfig) -> None:
+    """Validate that dataset and diffusion configs agree on dimensions and conditioning."""
+    if not isinstance(cfg_diffusion, SopeDiffusionConfig):
         raise TypeError(
-            f"cfg_diffusion must be a FilmDiffusionConfig, got {type(cfg_diffusion)}"
+            f"cfg_diffusion must be a SopeDiffusionConfig, got {type(cfg_diffusion)}"
         )
 
     if not hasattr(cfg_dataset, "frame_stack"):
@@ -703,12 +803,12 @@ def cross_validate_configs(cfg_dataset: Any, cfg_diffusion: FilmDiffusionConfig)
 
     if int(dataset_state_dim) != cfg_diffusion.state_dim:
         raise ValueError(
-            "Config mismatch: dataset state_dim must equal FilmDiffusionConfig.state_dim "
+            "Config mismatch: dataset state_dim must equal SopeDiffusionConfig.state_dim "
             f"({dataset_state_dim} != {cfg_diffusion.state_dim})."
         )
     if int(dataset_action_dim) != cfg_diffusion.action_dim:
         raise ValueError(
-            "Config mismatch: dataset action_dim must equal FilmDiffusionConfig.action_dim "
+            "Config mismatch: dataset action_dim must equal SopeDiffusionConfig.action_dim "
             f"({dataset_action_dim} != {cfg_diffusion.action_dim})."
         )
 

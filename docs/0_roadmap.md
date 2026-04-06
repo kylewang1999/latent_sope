@@ -1,5 +1,10 @@
 # Meeting Logs
 
+## 2026-04-08
+
+TODOs:
+1. Reward MLP learning 
+2. Steering and grad-log-prob for robomimic diffusion policy
 
 ## 2026-03-30
 

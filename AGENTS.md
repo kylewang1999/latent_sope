@@ -33,6 +33,11 @@ This file is a reusable template for research-oriented codebases. It keeps the s
 - If a task requires inspecting notebook structure, generated artifacts, or adjacent context before editing, default to the least disruptive read path first.
 - Only escalate permissions when the task genuinely requires it, and keep the scope of escalation narrow.
 
+### 2.3.1. Test environment
+
+- Before running validation, smoke tests, training entrypoints, or other repo-local execution checks, activate the conda environment `latent_sope`.
+- Prefer commands of the form `source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && <command>` so the environment choice is explicit and reproducible in logs.
+
 ### 2.4. Worktree structure
 
 - The repository is organized as a small git worktree family under `/home/kyle/repos/wkt_sope/`:

@@ -14,7 +14,9 @@ Relevant code:
 - [third_party/sope/opelab/core/baselines/diffuser.py](../third_party/sope/opelab/core/baselines/diffuser.py)
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py)
 - [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
-- [src/sope_diffuser.py](../src/sope_diffuser.py)
+- [src/diffusion.py](../src/diffusion.py)
+- [src/train.py](../src/train.py)
+- [src/eval.py](../src/eval.py)
 - [docs/reports/200331.md](./reports/200331.md)
 
 ## 1. DDPM Parameterization
@@ -425,9 +427,8 @@ This style is closest to trajectory in-painting:
 - the denoiser still operates on a trajectory-shaped tensor rather than on a
   separate context embedding
 
-In the local wrapper, this is exposed through `make_cond(...)` and prefix-state
-construction in
-[src/sope_diffuser.py](../src/sope_diffuser.py).
+In the older local wrapper, this was exposed through `make_cond(...)` and
+prefix-state construction in the removed `src/sope_diffuser.py` path.
 
 ### 2.2. Robomimic Diffusion Policy Uses Explicit Context Conditioning
 
@@ -463,7 +464,55 @@ Relevant lines:
 
 This is explicit context conditioning, not in-painting.
 
-## 3. Implication For The Current Robomimic Bug
+## 3. Canonical Backbone And Consolidation
+
+The repository now standardizes on the FiLM-conditioned robomimic backbone in
+[src/diffusion.py](../src/diffusion.py).
+
+### 3.1. Canonical API
+
+The canonical public surface is now:
+
+- `NormalizationStats`
+- `make_normalizers(...)`
+- `SopeDiffusionConfig`
+- `SopeDiffuser`
+- `cross_validate_configs(...)`
+
+Training and evaluation now use that single API directly:
+
+- [src/train.py](../src/train.py) instantiates the canonical diffuser
+- [src/eval.py](../src/eval.py) loads checkpoints through the same config and
+  wrapper path
+- the training scripts import `SopeDiffusionConfig` from
+  [src/diffusion.py](../src/diffusion.py)
+
+### 3.2. Why This Path Won
+
+The canonical path:
+
+- keeps SOPE's DDPM objective, scheduler coefficients, and guidance math
+- swaps the denoiser to robomimic's `ConditionalUnet1D`
+- flattens `states_from` into one FiLM conditioning vector of shape
+  `(B, frame_stack * state_dim)`
+- predicts only the future transition chunk
+  `states_to[:, :-1, :] || actions_to`
+
+So the active design changes the conditioning path and denoiser backbone, not
+the outer DDPM loop.
+
+### 3.3. Compatibility Decision
+
+This consolidation intentionally breaks compatibility with:
+
+- imports from `src.sope_diffuser`
+- older checkpoints that depended on `diffuser_kind`
+- older checkpoints that relied on the removed module path
+
+Any experiments that still need the removed path must be retrained or migrated
+manually.
+
+## 4. Implication For The Current Robomimic Bug
 
 The current main-branch report isolates the failure to the conditioned 19D
 robomimic setup:
@@ -491,7 +540,7 @@ Why:
 This does not prove that FiLM is universally better than SOPE's in-painting.
 It only means FiLM is a better match for the current robomimic debugging target.
 
-## 4. Before / After Summary
+## 5. Before / After Summary
 
 Before this note:
 
@@ -506,7 +555,7 @@ After this note:
 - the rationale for trying FiLM conditioning on the current 19D robomimic setup
   is documented in one place
 
-## 5. Validation To Re-Run
+## 6. Validation To Re-Run
 
 If the conditioning path is changed, the minimum follow-up checks should be:
 
@@ -515,3 +564,6 @@ If the conditioning path is changed, the minimum follow-up checks should be:
 2. comparison against the current prefix-state in-painting baseline
 3. the existing EEF-only control to verify the refactor did not break the base
    diffusion path
+4. `python3 -m py_compile src/diffusion.py src/train.py src/eval.py scripts/train_sope.py scripts/train_sope_gym.py scripts/train_sope_film.py`
+5. a one-step training smoke test and checkpoint save/load/eval round-trip on
+   the canonical path

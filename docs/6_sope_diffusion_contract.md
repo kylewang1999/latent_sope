@@ -260,7 +260,7 @@ $$\begin{align}
 \{0: s_{t0-S}, \dots, S-1: s_{t0-1}\}.
 \end{align}$$
 
-This is implemented in [src/sope_diffuser.py](../src/sope_diffuser.py):
+This is now implemented in [src/diffusion.py](../src/diffusion.py):
 
 ## EEF-Only Loss-Mask Ablation
 
@@ -352,9 +352,12 @@ Small validation to rerun after changes:
 2. one-batch diffusion loss smoke test for the active training mode
 3. chunk evaluation smoke test confirming the expected metric set is populated
 
-- `_build_training_target(...)` builds prefix steps as `[states_from, 0]`
-- `make_cond(...)` uses only `states_from`
-- prefix-step loss weights are zeroed
+The current canonical implementation differs from that historical contract:
+
+- the active `SopeDiffuser` in [src/diffusion.py](../src/diffusion.py) predicts
+  only the future chunk
+- `make_cond(...)` flattens `states_from` into FiLM conditioning
+- there is no separate prefix-in-trajectory training path anymore
 
 ## Why `actions_from` Is Not SOPE Conditioning
 

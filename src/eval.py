@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import torch
 
+from src.diffusion import NormalizationStats, SopeDiffuser, SopeDiffusionConfig
 from src.robomimic_interface.rollout import RolloutLatentTrajectory, load_rollout_latents
 from src.utils import resolve_device
-
-if TYPE_CHECKING:
-    from src.sope_diffuser import SopeDiffuser
 
 
 NP_FLOAT = np.float32
@@ -29,13 +27,6 @@ def _call_loss(
         if "compute_batch_rmse" not in str(exc):
             raise
         return diffuser.loss(batch_t)
-
-
-def _uses_inpainting_prefix(diffuser: Any) -> bool:
-    return (
-        getattr(diffuser.cfg, "conditioning_mode", "prefix_states") != "none"
-        and getattr(diffuser.cfg, "conditioning_style", "inpainting") == "inpainting"
-    )
 
 
 def _tracks_only_eef_pos(diffuser: Any) -> bool:
@@ -147,6 +138,24 @@ def _build_eval_summary_metrics(
     return summary
 
 
+def _flatten_eval_last_batch_info(info: Any) -> dict[str, float]:
+    if not isinstance(info, dict):
+        return {}
+
+    flattened: dict[str, float] = {}
+    for key, value in info.items():
+        # Eval-set RMSE reporting is defined in unnormalized space via
+        # evaluate_diffusion_chunk_mse(...). Avoid logging normalized-space
+        # chunk RMSE from the loss path under the eval namespace.
+        if key.startswith("chunk_rmse_"):
+            continue
+        if torch.is_tensor(value) and value.numel() == 1:
+            flattened[f"eval_last_batch/{key}"] = float(value.item())
+        elif np.isscalar(value):
+            flattened[f"eval_last_batch/{key}"] = float(value)
+    return flattened
+
+
 def load_diffusion_checkpoint(
     checkpoint_path: Path,
     *,
@@ -154,23 +163,9 @@ def load_diffusion_checkpoint(
     policy: Optional[Any] = None,
     behavior_policy: Optional[Any] = None,
 ) -> tuple[Any, dict[str, Any]]:
-    from src.sope_diffuser import NormalizationStats
-
     checkpoint_path = Path(checkpoint_path)
     payload = torch.load(str(checkpoint_path), map_location="cpu")
-    diffuser_kind = str(payload.get("diffuser_kind", "sope"))
-    if diffuser_kind == "sope":
-        from src.sope_diffuser import SopeDiffuser, SopeDiffusionConfig
-
-        diffuser_cls = SopeDiffuser
-        cfg_diffusion = SopeDiffusionConfig(**payload["diffusion_config"])
-    elif diffuser_kind == "film":
-        from src.diffusion import FilmDiffuser, FilmDiffusionConfig
-
-        diffuser_cls = FilmDiffuser
-        cfg_diffusion = FilmDiffusionConfig(**payload["diffusion_config"])
-    else:
-        raise ValueError(f"Unknown diffuser_kind={diffuser_kind!r} in checkpoint.")
+    cfg_diffusion = SopeDiffusionConfig(**payload["diffusion_config"])
 
     stats_payload = payload.get("normalization_stats")
     stats = None
@@ -180,7 +175,7 @@ def load_diffusion_checkpoint(
             std=np.asarray(stats_payload["std"], dtype=NP_FLOAT),
         )
 
-    diffuser = diffuser_cls(
+    diffuser = SopeDiffuser(
         cfg=cfg_diffusion,
         normalization_stats=stats,
         device=device or resolve_device(prefer_cuda=True),
@@ -247,8 +242,6 @@ def _sample_future_chunk_normalized(
     )
     if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
         return sample.trajectories
-    if _uses_inpainting_prefix(diffuser):
-        return sample.trajectories[:, diffuser.cfg.frame_stack :, :]
     return sample.trajectories
 
 
@@ -474,13 +467,7 @@ def evaluate_sope(
             loss_sum += float(loss.item())
             batches += 1
             if batch_idx == total_batches - 1:
-                last_batch_info = {}
-                if isinstance(info, dict):
-                    for key, value in info.items():
-                        if torch.is_tensor(value) and value.numel() == 1:
-                            last_batch_info[f"eval_last_batch/{key}"] = float(value.item())
-                        elif np.isscalar(value):
-                            last_batch_info[f"eval_last_batch/{key}"] = float(value)
+                last_batch_info = _flatten_eval_last_batch_info(info)
 
     unguided_chunk_eval, _ = evaluate_diffusion_chunk_mse(
         diffuser,
@@ -737,81 +724,6 @@ def evaluate_saved_diffusion_chunk_mse(
     )
 
 
-""" For autoregressively generating full trajectories from sope chunk diffusion """
-def generate_full_trajectory(
-    diffuser: Any,
-    initial_states: torch.Tensor,
-    *,
-    max_length: int,
-    guided: bool = False,
-    verbose: bool = False,
-    **guidance_kw: Any,
-) -> tuple[np.ndarray, np.ndarray]:
-    if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
-        raise NotImplementedError(
-            "generate_full_trajectory does not support conditioning_mode='none'. "
-            "Use chunk-level evaluation for the EEF-only debug path."
-        )
-    diffuser.diffusion.eval()
-
-    batch_size = int(initial_states.shape[0])
-    chunk_horizon = int(diffuser.cfg.chunk_horizon)
-    frame_stack = int(diffuser.cfg.frame_stack)
-    total_horizon = int(diffuser.cfg.total_chunk_horizon)
-
-    all_states = np.zeros((batch_size, max_length, diffuser.state_dim), dtype=NP_FLOAT)
-    all_actions = np.zeros((batch_size, max_length, diffuser.action_dim), dtype=NP_FLOAT)
-
-    init_dev = initial_states.to(diffuser.device)
-    dummy_actions = torch.zeros(
-        batch_size,
-        diffuser.action_dim,
-        device=diffuser.device,
-        dtype=init_dev.dtype,
-    )
-    init_padded = torch.cat([init_dev, dummy_actions], dim=-1)
-    init_norm = diffuser.normalizer(init_padded)[:, : diffuser.state_dim]
-    cond_states = init_norm.unsqueeze(1).expand(-1, frame_stack, -1).clone()
-
-    total_generated = 0
-    while total_generated < max_length:
-        steps_to_add = min(chunk_horizon, max_length - total_generated)
-        if _uses_inpainting_prefix(diffuser):
-            cond = {t: cond_states[:, t, :] for t in range(frame_stack)}
-        else:
-            cond = cond_states.reshape(batch_size, -1)
-        sample = diffuser.diffusion.conditional_sample(
-            shape=(batch_size, total_horizon, diffuser.transition_dim),
-            cond=cond,
-            guided=guided,
-            verbose=verbose,
-            **guidance_kw,
-        )
-        chunk = diffuser.unnormalizer(sample.trajectories)
-        if _uses_inpainting_prefix(diffuser):
-            gen_states = chunk[:, frame_stack:, : diffuser.state_dim]
-            gen_actions = chunk[:, frame_stack:, diffuser.state_dim :]
-        else:
-            gen_states = chunk[:, :, : diffuser.state_dim]
-            gen_actions = chunk[:, :, diffuser.state_dim :]
-
-        t_end = total_generated + steps_to_add
-        all_states[:, total_generated:t_end, :] = (
-            gen_states[:, :steps_to_add, :].detach().cpu().numpy()
-        )
-        all_actions[:, total_generated:t_end, :] = (
-            gen_actions[:, :steps_to_add, :].detach().cpu().numpy()
-        )
-        total_generated = t_end
-
-        if total_generated >= max_length:
-            break
-
-        cond_states = sample.trajectories[:, -frame_stack:, : diffuser.state_dim].clone()
-
-    return all_states, all_actions
-
-
 def trajectory_state_error(
     real_states: np.ndarray,
     generated_states: np.ndarray,
@@ -883,8 +795,7 @@ def evaluate_diffusion_trajectory_state_error(
         lengths[i] = length
 
     initial_states_t = torch.from_numpy(initial_states).to(diffuser.device)
-    unguided_states, _ = generate_full_trajectory(
-        diffuser,
+    unguided_states, _ = diffuser.generate_full_trajectory(
         initial_states_t,
         max_length=max_length,
         guided=False,
@@ -897,8 +808,7 @@ def evaluate_diffusion_trajectory_state_error(
 
     guided_error = None
     if evaluate_guided and getattr(diffuser.diffusion, "policy", None) is not None:
-        guided_states, _ = generate_full_trajectory(
-            diffuser,
+        guided_states, _ = diffuser.generate_full_trajectory(
             initial_states_t,
             max_length=max_length,
             guided=True,

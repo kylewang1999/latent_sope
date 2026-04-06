@@ -4,11 +4,13 @@ Relevant code:
 - [src/utils.py](../src/utils.py)
 - [src/train.py](../src/train.py)
 - [scripts/train_sope.py](../scripts/train_sope.py)
-- [src/sope_diffuser.py](../src/sope_diffuser.py)
+- [scripts/train_sope_gym.py](../scripts/train_sope_gym.py)
+- [src/diffusion.py](../src/diffusion.py)
 - [src/eval.py](../src/eval.py)
 - [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py)
 - [src/robomimic_interface/rollout.py](../src/robomimic_interface/rollout.py)
 - [src/robomimic_interface/checkpoints.py](../src/robomimic_interface/checkpoints.py)
+- [src/sope_interface/dataset.py](../src/sope_interface/dataset.py)
 
 ## Summary
 
@@ -17,7 +19,9 @@ This note consolidates the current SOPE training and chunk-evaluation pipeline.
 The active codepath now uses:
 - `src/utils.py` as the shared utility and path surface
 - `src/train.py` as the canonical SOPE training module
+- `src/diffusion.py` as the canonical SOPE diffusion module
 - `scripts/train_sope.py` as the CLI entrypoint for chunk-diffusion training
+- `scripts/train_sope_gym.py` as the SOPE Gym state-dataset entrypoint
 - `src/eval.py` as the reusable diffusion-checkpoint evaluation path
 
 ## Training Data Path
@@ -32,8 +36,8 @@ The training CLI also exposes `--num-workers`, which is forwarded into the
 PyTorch `DataLoader` construction for both the train and held-out eval loaders.
 
 The CLI now also exposes `--dim-mults` and forwards it directly into
-`SopeDiffusionConfig.dim_mults`, so Temporal U-Net width/depth can be changed
-from the training entrypoint without editing code.
+`SopeDiffusionConfig.dim_mults`, so the canonical diffusion backbone width/depth
+can be changed from the training entrypoint without editing code.
 
 ## Dataset And Chunking
 
@@ -46,6 +50,29 @@ The intended chunk layout is:
 - `actions_to`: actions from $t_0$ through $t_0 + W - 1$
 
 `train_sope.py` currently uses `source="latents"` by default.
+
+### SOPE Gym adapter
+
+The repository also supports SOPE Gym `pdataset`-style assets through
+[`src/sope_interface/dataset.py`](../src/sope_interface/dataset.py) and
+[`scripts/train_sope_gym.py`](../scripts/train_sope_gym.py).
+
+That adapter converts flat SOPE Gym arrays into the same chunk contract used by
+the rollout-backed loader:
+
+1. load `observations`, `actions`, `rewards`, and `terminals`
+2. reconstruct episode boundaries from `terminals`
+3. split train and eval at the episode level
+4. build `states_from`, `actions_from`, `states_to`, and `actions_to` chunks
+
+The SOPE Gym path supports two normalization modes:
+
+- `asset`: reuse the shipped `normalization.json`
+- `computed`: recompute shared train-split normalization from chunk data
+
+For low-dimensional gym states such as `pdataset`, evaluation logs transition,
+state, and action RMSE only. The robomimic-specific EEF metric is skipped
+because that state layout does not expose the `robot0_eef_pos` slice.
 
 ## Train Eval Split
 
@@ -91,6 +118,15 @@ full-trajectory stitching.
 - The evaluator also reports normalized-space chunk RMSE, a persistence
   baseline on the same target, and simple dataset scale summaries for the
   relevant state-action tensors.
+
+Metric-space convention when `normalize=True`:
+
+- training-time chunk RMSE diagnostics from the diffusion loss path are
+  normalized-space metrics
+- eval-set summary RMSE metrics use the unnormalized chunk metrics under
+  `gen_unnormalized`
+- normalized eval-loss-path chunk RMSE is not logged under the main eval
+  namespace to avoid mixing spaces
 
 ### Shared train-time and standalone eval path
 
@@ -146,8 +182,11 @@ updates the epoch progress bar postfix, and logs summary scalars without routing
 Run:
 
 ```bash
-python3 -m py_compile src/utils.py src/train.py scripts/train_sope.py src/eval.py src/robomimic_interface/dataset.py src/robomimic_interface/rollout.py src/robomimic_interface/checkpoints.py
+python3 -m py_compile src/utils.py src/train.py scripts/train_sope.py scripts/train_sope_gym.py src/eval.py src/robomimic_interface/dataset.py src/robomimic_interface/rollout.py src/robomimic_interface/checkpoints.py src/sope_interface/dataset.py
 python3 scripts/train_sope.py --help
+python3 scripts/train_sope_gym.py --help
 ```
 
-The first command checks syntax for the active training stack. The second validates the training CLI wiring without launching a run.
+The first command checks syntax for the active training stack. The CLI help
+checks validate both the rollout-backed and SOPE Gym training entrypoints
+without launching a run.

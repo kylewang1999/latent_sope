@@ -16,7 +16,7 @@ from src.utils import PATHS, make_log_dir
 
 
 def _resolve_default_checkpoint_dir() -> Path:
-    return Path(make_log_dir("train_sope", verbose=False))
+    return Path(make_log_dir("train_sope_film", verbose=False))
 
 
 def _resolve_default_data_path() -> Path:
@@ -71,10 +71,12 @@ def _infer_eef_pos_slice(path: Path) -> tuple[int, int]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train the SOPE chunk diffusion model from saved rollout latents.")
+    parser = argparse.ArgumentParser(
+        description="Train the canonical SOPE chunk diffusion model from saved rollout latents."
+    )
     parser.add_argument("--data", type=Path, default=_resolve_default_data_path())
     parser.add_argument("--checkpoint-dir", type=Path, default=None)
-    parser.add_argument("--epochs", type=int, default=500)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--lr", type=float, default=5e-3)
@@ -84,8 +86,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--chunk-size", type=int, default=4)
-    parser.add_argument("--dim-mults", type=int, nargs="+", default=(1, 2), help="TemporalUnet channel multipliers, e.g. --dim-mults 1 2 4.")
-    parser.add_argument("--action-weight", type=float, default=5.0)
+    parser.add_argument(
+        "--dim-mults",
+        type=int,
+        nargs="+",
+        default=(1, 2),
+        help="Robomimic ConditionalUnet1D width multipliers, e.g. --dim-mults 1 2 4.",
+    )
+    parser.add_argument("--diffusion-steps", type=int, default=512)
+    parser.add_argument("--attention", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--action-weight", type=float, default=10.0)
     parser.add_argument("--predict-epsilon", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--train-fraction", type=float, default=0.8)
@@ -98,8 +108,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diffuser-eef-pos-only", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--wandb-project", type=str, default="wkt_sope")
     parser.add_argument("--wandb-entity", type=str, default=None)
-    parser.add_argument("--wandb-run-name", type=str, default="train_sope")
-    parser.add_argument("--wandb-group", type=str, default="sope_diffusion")
+    parser.add_argument("--wandb-run-name", type=str, default="train_sope_film")
+    parser.add_argument("--wandb-group", type=str, default="sope_diffusion_film")
     parser.add_argument("--wandb-mode", type=str, default="online", choices=("online", "offline", "disabled"))
     return parser
 
@@ -108,8 +118,8 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    from src.diffusion import SopeDiffusionConfig
     from src.robomimic_interface.dataset import RolloutChunkDatasetConfig
-    from src.sope_diffuser import SopeDiffusionConfig
     from src.train import TrainingConfig, train_sope
 
     data_path = args.data.resolve()
@@ -132,7 +142,9 @@ def main() -> None:
         frame_stack=frame_stack,
         state_dim=latent_dim,
         action_dim=action_dim,
+        diffusion_steps=args.diffusion_steps,
         dim_mults=tuple(args.dim_mults),
+        attention=bool(args.attention),
         action_weight=args.action_weight,
         predict_epsilon=bool(args.predict_epsilon),
         diffuser_eef_pos_only=bool(args.diffuser_eef_pos_only),
@@ -143,6 +155,7 @@ def main() -> None:
             raise ValueError(
                 f"Expected robot0_eef_pos slice (10, 13) for robomimic low-dim rollouts, got {eef_pos_slice}."
             )
+
     cfg_training = TrainingConfig(
         data=[data_path],
         checkpoint_dir=checkpoint_dir,
@@ -166,7 +179,7 @@ def main() -> None:
         wandb_run_name=args.wandb_run_name,
         wandb_group=args.wandb_group,
         wandb_mode=args.wandb_mode,
-        wandb_tags=("train_sope", data_path.stem),
+        wandb_tags=("train_sope_film", data_path.stem),
     )
 
     train_sope(

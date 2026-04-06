@@ -3,10 +3,9 @@ from __future__ import annotations
 import json
 import math
 import sys
-import functools
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -89,13 +88,11 @@ def _save_checkpoint(
     cfg_dataset: Any,
     cfg_training: TrainingConfig,
     stats: Optional["DatasetNormalizationStats"],
-    diffuser_kind: str,
 ) -> None:
     payload = {
         "diffusion_state_dict": diffuser.diffusion.state_dict(),
         "epoch": int(epoch),
         "step": int(step),
-        "diffuser_kind": diffuser_kind,
         "diffusion_config": asdict(cfg_diffusion),
         "dataset_config": asdict(cfg_dataset),
         "training_config": _serialize_training_config(cfg_training),
@@ -111,10 +108,8 @@ def _save_configs(
     cfg_diffusion: Any,
     cfg_dataset: Any,
     cfg_training: TrainingConfig,
-    diffuser_kind: str,
 ) -> None:
     payload = {
-        "diffuser_kind": diffuser_kind,
         "diffusion_config": asdict(cfg_diffusion),
         "dataset_config": asdict(cfg_dataset),
         "training_config": _serialize_training_config(cfg_training),
@@ -154,6 +149,16 @@ def _flatten_scalar_metrics(info: Any) -> dict[str, float]:
     return flat
 
 
+def _format_train_info_metrics(info: Any) -> dict[str, float]:
+    formatted: dict[str, float] = {}
+    for key, value in _flatten_scalar_metrics(info).items():
+        if key.startswith("chunk_rmse_"):
+            formatted[f"train_normalized/{key}"] = value
+        else:
+            formatted[f"train/{key}"] = value
+    return formatted
+
+
 def _call_loss(
     diffuser: Any,
     batch_t: dict[str, torch.Tensor],
@@ -187,130 +192,6 @@ def _build_lr_scheduler(
         T_max=max(total_steps, 1),
         eta_min=cfg_training.lr_scheduler_min_lr,
     )
-
-
-def _patch_torch_optimizer_for_missing_sympy() -> None:
-    """Work around torch optimizer construction pulling in torch._dynamo.
-
-    Some local environments ship a torch build whose optimizer base class wraps
-    `add_param_group` with `torch._compile._disable_dynamo`, which lazily
-    imports `torch._dynamo` and therefore `sympy`. The training code does not
-    use Dynamo, so when `sympy` is unavailable we can safely unwrap that method
-    back to the original implementation.
-    """
-    try:
-        import sympy  # noqa: F401
-
-        return
-    except ModuleNotFoundError:
-        pass
-
-    import torch.optim as optim_mod
-    import torch.optim.optimizer as optimizer_mod
-
-    for name in ("add_param_group", "zero_grad", "state_dict", "load_state_dict"):
-        method = getattr(optimizer_mod.Optimizer, name, None)
-        original = getattr(method, "__wrapped__", None)
-        if original is not None:
-            setattr(optimizer_mod.Optimizer, name, original)
-
-    for attr_name in dir(optim_mod):
-        attr = getattr(optim_mod, attr_name)
-        if not isinstance(attr, type):
-            continue
-        if not issubclass(attr, optimizer_mod.Optimizer):
-            continue
-        step = getattr(attr, "step", None)
-        original = getattr(step, "__wrapped__", None)
-        if original is not None:
-            @functools.wraps(original)
-            def _patched_step(self, *args, __original=original, **kwargs):
-                prev_grad = torch.is_grad_enabled()
-                try:
-                    torch.set_grad_enabled(self.defaults.get("differentiable", False))
-                    return __original(self, *args, **kwargs)
-                finally:
-                    torch.set_grad_enabled(prev_grad)
-
-            setattr(attr, "step", _patched_step)
-
-
-def _patch_wandb_sentry_deprecations() -> None:
-    """Patch W&B 0.24's deprecated Sentry calls to the current APIs."""
-    import wandb.analytics.sentry as sentry_mod
-    from urllib.parse import quote
-    from wandb.sdk.wandb_settings import Settings
-
-    if getattr(sentry_mod.Sentry.configure_scope, "_wkt_sope_patched", False):
-        return
-
-    @sentry_mod._guard
-    def _configure_scope(
-        self,
-        tags: dict[str, Any] | None = None,
-        process_context: str | None = None,
-    ) -> None:
-        if self.scope is None:
-            return
-
-        settings_tags = (
-            "entity",
-            "project",
-            "run_id",
-            "run_url",
-            "sweep_url",
-            "sweep_id",
-            "deployment",
-            "launch",
-            "_platform",
-        )
-
-        if process_context:
-            self.scope.set_tag("process_context", process_context)
-
-        if tags is None:
-            return None
-
-        for tag in settings_tags:
-            val = tags.get(tag, None)
-            if val not in (None, ""):
-                self.scope.set_tag(tag, val)
-
-        if tags.get("_colab", None):
-            python_runtime = "colab"
-        elif tags.get("_jupyter", None):
-            python_runtime = "jupyter"
-        elif tags.get("_ipython", None):
-            python_runtime = "ipython"
-        else:
-            python_runtime = "python"
-        self.scope.set_tag("python_runtime", python_runtime)
-
-        for obj in ("run", "sweep"):
-            obj_id, obj_url = f"{obj}_id", f"{obj}_url"
-            if tags.get(obj_url, None):
-                continue
-            try:
-                base_url = tags.get("base_url")
-                if not base_url:
-                    continue
-                app_url = Settings(base_url=base_url).app_url
-                entity, project = (quote(tags[k]) for k in ("entity", "project"))
-                self.scope.set_tag(
-                    obj_url,
-                    f"{app_url}/{entity}/{project}/{obj}s/{tags[obj_id]}",
-                )
-            except Exception:
-                pass
-
-        email = tags.get("email")
-        if email:
-            self.scope.set_user({"email": email})
-
-        self.start_session()
-
-    _configure_scope._wkt_sope_patched = True  # type: ignore[attr-defined]
-    sentry_mod.Sentry.configure_scope = _configure_scope
 
 
 def _resolve_save_every(cfg_training: TrainingConfig) -> int:
@@ -376,18 +257,11 @@ def train_sope_with_loaders(
     stats: Optional["DatasetNormalizationStats"],
     train_data_refs: Optional[Sequence[Any]] = None,
     eval_data_refs: Optional[Sequence[Any]] = None,
-    diffuser_cls: Optional[type[Any]] = None,
-    cross_validate_fn: Optional[Callable[[Any, Any], None]] = None,
-    diffuser_kind: str = "sope",
 ) -> None:
+    from src.diffusion import SopeDiffuser, cross_validate_configs
     from src.eval import evaluate_sope
     import wandb
-    _patch_wandb_sentry_deprecations()
-    if diffuser_cls is None or cross_validate_fn is None:
-        from src.sope_diffuser import SopeDiffuser, cross_validate_configs
-
-        diffuser_cls = diffuser_cls or SopeDiffuser
-        cross_validate_fn = cross_validate_fn or cross_validate_configs
+    # _patch_wandb_sentry_deprecations()
 
     set_global_seed(cfg_training.seed)
 
@@ -421,10 +295,10 @@ def train_sope_with_loaders(
                 "diffuser_eef_pos_only requires either state_projection='eef_pos' or a low-dim robomimic state with robot0_eef_pos at slice [10:13]."
             )
 
-    cross_validate_fn(cfg_dataset, cfg_diffusion)
+    cross_validate_configs(cfg_dataset, cfg_diffusion)
 
-    _patch_torch_optimizer_for_missing_sympy()
-    diffuser = diffuser_cls(
+    # _patch_torch_optimizer_for_missing_sympy()
+    diffuser = SopeDiffuser(
         cfg=cfg_diffusion,
         normalization_stats=stats,
         device=device_str,
@@ -463,7 +337,6 @@ def train_sope_with_loaders(
             cfg_diffusion,
             cfg_dataset,
             cfg_training,
-            diffuser_kind=diffuser_kind,
         )
 
     run = None
@@ -540,8 +413,7 @@ def train_sope_with_loaders(
                         "train/epoch": float(epoch),
                         "train/step": float(step),
                     }
-                    for key, value in _flatten_scalar_metrics(info).items():
-                        batch_metrics[f"train/{key}"] = value
+                    batch_metrics.update(_format_train_info_metrics(info))
                     run.log(batch_metrics, step=step)
 
                 if max_steps and step >= max_steps:
@@ -587,7 +459,6 @@ def train_sope_with_loaders(
                     cfg_dataset,
                     cfg_training,
                     stats,
-                    diffuser_kind,
                 )
                 latest_path = checkpoint_dir / "sope_diffuser_latest.pt"
                 _save_checkpoint(
@@ -599,7 +470,6 @@ def train_sope_with_loaders(
                     cfg_dataset,
                     cfg_training,
                     stats,
-                    diffuser_kind,
                 )
 
             if max_steps and step >= max_steps:
@@ -613,9 +483,6 @@ def train_sope(
     cfg_dataset: RolloutChunkDatasetConfig,
     cfg_diffusion: Any,
     cfg_training: TrainingConfig,
-    diffuser_cls: Optional[type[Any]] = None,
-    cross_validate_fn: Optional[Callable[[Any, Any], None]] = None,
-    diffuser_kind: str = "sope",
 ) -> None:
     from src.robomimic_interface.dataset import make_rollout_chunk_dataloader
 
@@ -663,9 +530,6 @@ def train_sope(
         stats=stats,
         train_data_refs=train_paths,
         eval_data_refs=eval_paths,
-        diffuser_cls=diffuser_cls,
-        cross_validate_fn=cross_validate_fn,
-        diffuser_kind=diffuser_kind,
     )
 
 

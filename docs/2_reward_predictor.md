@@ -257,3 +257,53 @@ SOPE's reward predictor in this repo is:
   bootstrap by default
 - consumed only during synthetic trajectory scoring when no hand-coded reward
   function is available
+
+## Dense Lift Reward Follow-Up
+
+For robomimic / robosuite Lift, a useful adjacent question is what shaped reward
+to use if we later want denser supervision for reward modeling, OPE, or value
+estimation.
+
+The most defensible first version is a staged dense reward rather than a purely
+sparse success flag:
+
+- `reach`: reward increases as the gripper gets closer to the cube
+- `grasp`: bonus when the gripper has a stable grasp
+- `lift`: bonus when the cube has been lifted above the table
+
+At a high level:
+
+$$\begin{align}
+r_t
+&=
+w_{\text{reach}} \, r_{\text{reach}}(s_t)
++ w_{\text{grasp}} \, r_{\text{grasp}}(s_t)
++ w_{\text{lift}} \, r_{\text{lift}}(s_t).
+\end{align}$$
+
+A simple smooth starting point is
+
+$$\begin{align}
+r_t
+&=
+\alpha \exp\!\left(-\beta \lVert p_{\text{gripper}} - p_{\text{cube}} \rVert \right)
++ \gamma \, g_t
++ \delta \, \mathrm{clip}(h_t - h_0, 0, h_{\max}),
+\end{align}$$
+
+where $p_{\text{gripper}}$ is gripper position, $p_{\text{cube}}$ is cube
+position, $g_t$ is a grasp indicator or soft grasp score, and $h_t - h_0$
+measures lift progress above the initial cube height.
+
+This matters for the reward-predictor story because SOPE's current regressor
+only learns from whatever per-step rewards the offline dataset already carries.
+If the dataset reward is too sparse to be useful, a shaped lift reward is the
+most direct next target to define before changing the model architecture.
+
+Practical recommendation:
+
+1. start with `reach + grasp + lift`
+2. keep the reward computable from the stored state or observation surface
+3. check whether the shaped signal aligns with actual task success on saved
+   trajectories
+4. only then consider training a learned reward model against that shaped target
