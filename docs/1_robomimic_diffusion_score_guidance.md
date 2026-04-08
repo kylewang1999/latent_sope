@@ -1,37 +1,30 @@
-# Robomimic Diffusion Guidance And FiLM Backbone
-
-This note consolidates the repository's robomimic-specific diffusion guidance
-and `ConditionalUnet1D` conditioning notes.
+# Robomimic Diffusion Guidance, FiLM Backbone, And Visual Encoder Training
 
 Relevant code:
 
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py)
 - [third_party/robomimic/robomimic/config/diffusion_policy_config.py](../third_party/robomimic/robomimic/config/diffusion_policy_config.py)
 - [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
-- [third_party/sope/opelab/core/baselines/diffusion/diffusion.py](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py)
-- [third_party/sope/opelab/core/policy.py](../third_party/sope/opelab/core/policy.py)
+- [third_party/robomimic/robomimic/models/obs_core.py](../third_party/robomimic/robomimic/models/obs_core.py)
+- [third_party/robomimic/robomimic/models/base_nets.py](../third_party/robomimic/robomimic/models/base_nets.py)
 - [src/diffusion.py](../src/diffusion.py)
-- [src/robomimic_interface/checkpoints.py](../src/robomimic_interface/checkpoints.py)
-- [src/robomimic_interface/rollout.py](../src/robomimic_interface/rollout.py)
+- [src/sampling.py](../src/sampling.py)
+- [src/robomimic_interface/policy.py](../src/robomimic_interface/policy.py)
 
 ## 1. Summary
 
 Robomimic's diffusion policy is trained as an epsilon predictor over action
 sequences, not as a tractable density model with a native
-$\log \pi(a \mid s)$ interface. For SOPE-style guidance, the usable signal is
-the denoising score implied by the DDPM parameterization:
+$\log \pi(a \mid s)$ interface. In the current repository:
 
-$$\begin{align}
-\nabla_{a_t} \log p_t(a_t \mid s)
-\approx
-- \frac{\hat{\epsilon}_\theta(a_t, t, s)}{\sqrt{1 - \bar{\alpha}_t}}.
-\end{align}$$
-
-In this repository, the same robomimic backbone is also the canonical FiLM-like
-conditioning implementation. `FilmConditionedBackbone` in
-[src/diffusion.py](../src/diffusion.py) is only a thin adapter around
-robomimic's `ConditionalUnet1D`; the actual conditioning happens inside the
-robomimic residual blocks through per-channel scale and bias modulation.
+- the usable guidance signal is the denoising score implied by that
+  epsilon-prediction parameterization
+- the local sampler expects diffusion-style policies exposing
+  `grad_log_prob(state, action)`
+- `FilmConditionedBackbone` is a thin adapter around robomimic's
+  `ConditionalUnet1D`
+- the default robomimic visual encoder is trained jointly with the diffusion
+  U-Net unless the chosen backbone explicitly freezes itself
 
 ## 2. What Robomimic Actually Trains
 
@@ -43,25 +36,19 @@ Robomimic's diffusion policy:
 4. predicts the noise with `noise_pred_net`
 5. minimizes MSE against the sampled noise
 
-The model is therefore a sequence model over action chunks. The public network
-contract is:
-
-- `sample`: `(B, T, input_dim)`
-- `timestep`: scalar or `(B,)`
-- `global_cond`: `(B, global_cond_dim)` or `None`
-
-Internally the sample is moved to channel-first layout:
+The model is therefore a sequence model over action chunks. The score used for
+local guidance is the usual DDPM score approximation:
 
 $$\begin{align}
-\text{sample} &\in \mathbb{R}^{B \times T \times \text{input\_dim}} \\
-x &= \text{moveaxis}(\text{sample}, -1, -2)
-\in \mathbb{R}^{B \times \text{input\_dim} \times T}.
+\nabla_{a_t} \log p_t(a_t \mid s)
+\approx
+- \frac{\hat{\epsilon}_\theta(a_t, t, s)}{\sqrt{1 - \bar{\alpha}_t}}.
 \end{align}$$
 
-## 3. SOPE Guidance Contract
+## 3. Local Guidance Contract
 
-SOPE's guided diffusion path expects a policy object that can return an
-action-space score compatible with the sampled chunk tensor:
+The local SOPE-style sampler does not ask robomimic for an exact likelihood.
+Instead it requires a policy adapter with the contract
 
 $$\begin{align}
 \texttt{policy.grad\_log\_prob(states, actions)}
@@ -70,18 +57,24 @@ $$\begin{align}
 {\partial \text{actions}}.
 \end{align}$$
 
-That means the robomimic integration problem is not only "extract a score from
-the denoiser." The adapter must also:
+In the current repo that means:
 
-- reconstruct the raw `PolicyAlgo` from a checkpoint
-- access EMA weights, `noise_pred_net`, `obs_encoder`, and scheduler state
-- align robomimic sequence shapes with SOPE's guidance call site
-- align action normalization conventions
-- pass the active SOPE diffusion timestep into the guidance path
+- [src/robomimic_interface/policy.py](../src/robomimic_interface/policy.py)
+  reconstructs the robomimic policy internals and exposes `grad_log_prob(...)`
+- [src/sampling.py](../src/sampling.py) assumes both target and behavior
+  policies follow that same diffusion-policy contract
+- guidance edits only action channels; the local sampler does not treat the
+  policy as a scorer over state coordinates
+
+Current caveat:
+
+- the adapter still uses a fixed score timestep rather than the active chunk
+  sampler timestep, so guidance remains an approximation even though it is now
+  wired end to end for diffusion-policy adapters
 
 ## 4. Why The Backbone Is FiLM-Style
 
-Robomimic's `ConditionalUnet1D` does not instantiate
+Robomimic's `ConditionalUnet1D` does not instantiate a class literally called
 `FiLMLayer`, but its conditioning path is still FiLM-style.
 
 The timestep embedding and optional observation-conditioning vector are
@@ -100,59 +93,36 @@ $$\begin{align}
 \end{align}$$
 
 Each conditioned residual block maps that vector into per-channel scale and bias
-parameters that modulate the intermediate convolution features. This is the
-practical reason the repo-level diffusion wrapper treats robomimic as the
-canonical FiLM-conditioned backbone.
+parameters that modulate intermediate convolution features. This is why the
+local diffusion wrapper treats robomimic as the canonical FiLM-conditioned
+backbone.
 
-## 5. Integration Caveats
+## 5. Visual Encoder Training Contract
 
-### 5.1 Timestep mapping
+Robomimic's default image path uses `VisualCore`, which by default uses a
+trainable `ResNet18Conv` backbone with `SpatialSoftmax`.
 
-The guidance adapter must use the same diffusion timestep convention as the
-active SOPE sampler. Any mismatch between scheduler indices or timestep scaling
-changes the score magnitude.
+During standard diffusion-policy BC training:
 
-### 5.2 Shape mismatch
+- the observation encoder lives inside the `policy` module together with
+  `noise_pred_net`
+- the forward pass runs through `obs_encoder` before the denoiser
+- the optimizer is built over the enclosing `policy` module
 
-Robomimic is naturally sequence-level, while SOPE's current call site is often
-flattened to per-step `(N \cdot T, D)` action tensors. The two plausible
-integration choices are:
+So for the default configuration, the visual encoder is trained jointly with
+the diffusion U-Net.
 
-1. change the guidance path to operate on full action chunks
-2. use a single-step approximation that discards some sequence structure
+This is not universal. Pretrained backbones such as `R3MConv` and `MVPConv`
+expose a `freeze` flag and can remain frozen even though the outer robomimic
+policy is still optimized.
 
-The first option is more faithful to the model that robomimic actually trains.
-
-### 5.3 Action normalization
-
-The score is defined in whatever action space the denoiser sees. If SOPE
-samples in normalized action space while the external interface expects raw
-actions, the guidance term must be transformed consistently.
-
-### 5.4 Observation conditioning
-
-Guidance depends on the same observation encoding path as robomimic rollout.
-Using `RolloutPolicy` alone is not enough when direct access to encoder and
-scheduler internals is required.
-
-## 6. Repository Status
-
-The repo already notes that guided sampling is not yet wired end to end through
-the local SOPE wrapper:
-
-- `guided=True` is still incomplete in the current sampling path
-- guidance hyperparameters are not fully threaded through
-- the active sampler still assumes any attached guidance policy already matches
-  the expected `grad_log_prob(...)` contract
-
-## 7. Validation
+## 6. Validation
 
 The smallest meaningful checks for this part of the stack are:
 
-1. reconstruct a robomimic `PolicyAlgo` from a checkpoint and confirm access to
-   EMA weights, `noise_pred_net`, `obs_encoder`, and scheduler state
-2. verify the returned action-gradient shape matches the SOPE action tensor
-3. compare score magnitudes before and after normalization
-4. run one guided and one unguided chunk sample and confirm only the action
-   slice changes
-5. rerun `python -m py_compile src/diffusion.py src/robomimic_interface/checkpoints.py src/robomimic_interface/rollout.py`
+1. reconstruct a robomimic `PolicyAlgo` from checkpoint artifacts and confirm
+   access to EMA weights, `noise_pred_net`, `obs_encoder`, and scheduler state
+2. verify that `grad_log_prob(...)` returns the expected action-gradient shape
+3. run one guided and one unguided chunk sample and confirm only action
+   coordinates receive explicit score edits
+4. rerun `python -m py_compile src/diffusion.py src/sampling.py src/robomimic_interface/policy.py`

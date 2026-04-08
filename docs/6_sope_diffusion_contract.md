@@ -12,10 +12,10 @@ Relevant code:
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py)
 - [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
 - [src/diffusion.py](../src/diffusion.py)
+- [src/sampling.py](../src/sampling.py)
 - [src/train.py](../src/train.py)
 - [src/eval.py](../src/eval.py)
 - [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py)
-- [src/sope_diffuser.py](../src/sope_diffuser.py)
 
 ## 1. Summary
 
@@ -170,7 +170,7 @@ topics.
 For behavior-changing work in this part of the stack, rerun at least:
 
 ```bash
-source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/diffusion.py src/train.py src/eval.py src/robomimic_interface/dataset.py src/sope_diffuser.py
+source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/diffusion.py src/sampling.py src/train.py src/eval.py src/robomimic_interface/dataset.py
 ```
 
 If the change affects conditioning or normalization semantics, also rerun the

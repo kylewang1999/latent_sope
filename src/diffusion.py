@@ -22,13 +22,8 @@ from third_party.robomimic.robomimic.models.diffusion_policy_nets import (
 )
 from third_party.sope.opelab.core.baselines.diffusion.diffusion import (
     GaussianDiffusion,
-    Sample,
-    gradlog,
-    gradlog_diffusion,
-    get_schedule_multiplier,
-    make_timesteps,
 )
-import third_party.sope.opelab.core.baselines.diffusion.utils as diffusion_utils
+from src.sampling import guided_sampling, run_film_p_sample_loop
 
 
 @dataclass(frozen=True)
@@ -185,125 +180,6 @@ def make_normalizers(
     return _norm, _unnorm
 
 
-def _film_sample_fn(
-    model: "FilmGaussianDiffusion",
-    x: torch.Tensor,
-    t: torch.Tensor,
-    state_dim: int,
-    action_dim: int,
-    guided: bool,
-    guidance_hyperparams: Optional[dict[str, Any]],
-    *,
-    gmode: bool = False,
-    policy: Optional[Any] = None,
-    behavior_policy: Optional[Any] = None,
-    transform: Optional[Any] = None,
-    unnormalizer: Optional[Any] = None,
-    normalizer: Optional[Any] = None,
-    cond: Optional[torch.Tensor] = None,
-    return_info: bool = False,
-    reverse: bool = False,
-) -> tuple[torch.Tensor, list[Optional[torch.Tensor]]]:
-    """Sampling helper that keeps SOPE guidance math but skips in-paint reconditioning."""
-
-    del transform
-
-    with torch.no_grad():
-        model_mean, _, model_log_variance = model.p_mean_variance(x=x, t=t, cond=cond)
-        model_std = torch.exp(0.5 * model_log_variance)
-
-    if not guidance_hyperparams:
-        guidance_hyperparams = {}
-
-    k = guidance_hyperparams.get("k_guide", 2)
-    normalize_grad = guidance_hyperparams.get("normalize_grad", True)
-    use_adaptive = guidance_hyperparams.get("use_adaptive", True)
-    use_neg_grad = guidance_hyperparams.get("use_neg_grad", True)
-    action_scale = guidance_hyperparams.get("action_scale", 0.2)
-    clamp = guidance_hyperparams.get("clamp", False)
-    l_inf = guidance_hyperparams.get("l_inf", 1.0)
-    ratio = guidance_hyperparams.get("ratio", 1.0)
-    normalize_v = not clamp and normalize_grad
-
-    info: list[Optional[torch.Tensor]] = [None, None]
-    if return_info:
-        info[0] = model_mean[..., state_dim:].detach().clone()
-
-    if normalizer is None or unnormalizer is None:
-        raise ValueError("FiLM diffusion sampling requires normalizer and unnormalizer.")
-
-    model_mean = unnormalizer(model_mean)
-    if guided:
-        if policy is None:
-            raise ValueError("guided=True requires a target policy.")
-        if use_neg_grad and behavior_policy is None:
-            raise ValueError("Negative guidance requires a behavior policy.")
-
-        for _ in range(k):
-            if policy.__class__.__name__ == "DiffusionPolicy":
-                gradient = gradlog_diffusion(
-                    policy, model_mean, state_dim, action_dim, normalize=normalize_v
-                )
-            else:
-                gradient = gradlog(
-                    policy,
-                    model_mean,
-                    state_dim,
-                    action_dim,
-                    normalize=normalize_v,
-                    gmode=gmode,
-                    verbose=False,
-                    reverse=reverse,
-                )
-
-            neg_grad = 0
-            if use_neg_grad:
-                neg_grad = gradlog(
-                    behavior_policy,
-                    model_mean,
-                    state_dim,
-                    action_dim,
-                    normalize=normalize_v,
-                    gmode=gmode,
-                    verbose=False,
-                    reverse=reverse,
-                )
-
-            if use_neg_grad:
-                if normalize_grad:
-                    if clamp:
-                        gradient = torch.clamp(gradient, min=-l_inf, max=l_inf)
-                        neg_grad = torch.clamp(ratio * neg_grad, min=-l_inf, max=l_inf)
-                    else:
-                        neg_grad = ratio * neg_grad
-                guide = gradient - neg_grad
-            else:
-                if normalize_grad and clamp:
-                    gradient = torch.clamp(gradient, min=-l_inf, max=l_inf)
-                guide = gradient
-
-            if use_adaptive:
-                scale_multiplier = get_schedule_multiplier(
-                    model.n_timesteps - t[0].item(),
-                    model.n_timesteps,
-                    schedule_type="cosine",
-                )
-                guide = scale_multiplier * action_scale * guide
-            else:
-                guide = action_scale * guide
-
-            model_mean = model_mean + guide
-            model_mean = unnormalizer(normalizer(model_mean))
-            if return_info:
-                info[1] = guide[..., state_dim:].detach().clone()
-
-    model_mean = normalizer(model_mean)
-    with torch.no_grad():
-        noise = torch.randn_like(x)
-        noise[t == 0] = 0
-    return model_mean + model_std * noise, info
-
-
 class FilmConditionedBackbone(nn.Module):
     """Adapter from the SOPE diffusion contract to robomimic's ConditionalUnet1D."""
 
@@ -369,10 +245,7 @@ class FilmGaussianDiffusion(GaussianDiffusion):
         behavior_policy: Optional[Any] = None,
         normalizer: Optional[Any] = None,
         unnormalizer: Optional[Any] = None,
-        transform: Optional[Any] = None,
         guided: bool = True,
-        gmode: bool = False,
-        reverse: bool = False,
     ) -> None:
         """Inherit SOPE's DDPM buffers and core attrs with an explicit constructor."""
         super().__init__(
@@ -391,10 +264,7 @@ class FilmGaussianDiffusion(GaussianDiffusion):
             behavior_policy=behavior_policy,
             normalizer=normalizer,
             unnormalizer=unnormalizer,
-            transform=transform,
             guided=guided,
-            gmode=gmode,
-            reverse=reverse,
         )
 
     def get_loss_weights(
@@ -479,77 +349,25 @@ class FilmGaussianDiffusion(GaussianDiffusion):
         *,
         verbose: bool = True,
         return_chain: bool = False,
-        sample_fn: Any = _film_sample_fn,
+        sample_fn: Any = guided_sampling,
         guided: bool = False,
         guidance_hyperparams: Optional[dict[str, Any]] = None,
         return_info: bool = False,
         **sample_kwargs: Any,
     ) -> Any:
         """Run the reverse DDPM loop with FiLM context instead of in-paint reconditioning."""
-        device = self.betas.device
-        with torch.no_grad():
-            batch_size = shape[0]
-            x = torch.randn(shape).to(device=device)
-            chain = [x] if return_chain else None
-
-        guidance_grads_over_time = []
-        model_preds_over_time = []
-        progress = diffusion_utils.Progress(self.n_timesteps) if verbose else diffusion_utils.Silent()
-
-        for i in reversed(range(0, self.n_timesteps)):
-            t = make_timesteps(batch_size, i, device)
-            if self.policy is not None:
-                sample_kwargs["policy"] = self.policy
-                sample_kwargs["behavior_policy"] = self.behavior_policy
-            if self.transform is not None:
-                sample_kwargs["transform"] = self.transform
-            if self.normalizer is not None:
-                sample_kwargs["normalizer"] = self.normalizer
-                sample_kwargs["unnormalizer"] = self.unnormalizer
-            else:
-                raise ValueError("FiLM diffusion sampling requires normalization helpers.")
-
-            x, info = sample_fn(
-                self,
-                x,
-                t,
-                state_dim=self.observation_dim,
-                action_dim=self.action_dim,
-                guided=guided,
-                guidance_hyperparams=guidance_hyperparams,
-                return_info=return_info,
-                gmode=self.gmode,
-                reverse=self.reverse,
-                cond=cond,
-                **sample_kwargs,
-            )
-            if return_info:
-                if info[0] is not None:
-                    model_preds_over_time.append(info[0].detach().cpu().numpy().copy())
-                if info[1] is not None:
-                    guidance_grads_over_time.append(info[1].detach().cpu().numpy().copy())
-            progress.update({"t": i})
-            if return_chain:
-                chain.append(x)
-
-        progress.stamp()
-
-        if return_info:
-            info_payload = {
-                "model_predictions": (
-                    np.stack(model_preds_over_time) if model_preds_over_time else np.empty((0,))
-                ),
-                "guidance": (
-                    np.stack(guidance_grads_over_time) if guidance_grads_over_time else np.empty((0,))
-                ),
-            }
-
-        if return_chain:
-            chain = torch.stack(chain, dim=1)
-        x = x.detach()
-        if return_info:
-            return Sample(x, None, chain), info_payload
-        return Sample(x, None, chain)
+        return run_film_p_sample_loop(
+            self,
+            shape,
+            cond,
+            verbose=verbose,
+            return_chain=return_chain,
+            sample_fn=sample_fn,
+            guided=guided,
+            guidance_hyperparams=guidance_hyperparams,
+            return_info=return_info,
+            **sample_kwargs,
+        )
 
     def conditional_sample(
         self,
@@ -559,14 +377,11 @@ class FilmGaussianDiffusion(GaussianDiffusion):
         verbose: bool = True,
         return_chain: bool = False,
         action_scale: float = 0.2,
-        state_scale: float = 0.01,
         guided: bool = False,
         use_adaptive: bool = True,
         use_neg_grad: bool = True,
-        neg_grad_scale: float = 0.1,
         normalize_grad: bool = True,
         k_guide: int = 2,
-        use_action_grad_only: bool = True,
         return_info: bool = False,
         clamp: bool = False,
         l_inf: float = 1.0,
@@ -574,7 +389,6 @@ class FilmGaussianDiffusion(GaussianDiffusion):
         **sample_kwargs: Any,
     ) -> Any:
         """Preserve SOPE's public sampling interface for the FiLM-conditioned sampler."""
-        del state_scale, neg_grad_scale, use_action_grad_only
         guidance_hyperparams = {
             "action_scale": action_scale,
             "use_adaptive": use_adaptive,

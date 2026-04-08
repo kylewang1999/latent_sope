@@ -98,7 +98,8 @@ Training-time evaluation is orchestrated through
 - epoch summaries
 - held-out unguided metrics such as loss and RMSE
 - held-out diagnostics
-- placeholder guided namespaces for future guided evaluation wiring
+- guided metrics when a guidance policy is attached, otherwise placeholder
+  guided namespaces so downstream dashboards keep a stable schema
 
 When `wandb` is enabled, the train/eval split and evaluation/save cadence are
 included in the logged config metadata.

@@ -201,22 +201,6 @@ def _format_reward_info_metrics(info: Any) -> dict[str, float]:
     return {f"reward_train/{key}": value for key, value in _flatten_scalar_metrics(info).items()}
 
 
-# TODO: fold this logic inside _make_sope_train_callbacks._compute_loss. That's the only place where it's used.
-# Also; why need this complicated try-except logic?
-def _call_loss(
-    diffuser: Any,
-    batch_t: dict[str, torch.Tensor],
-    *,
-    compute_batch_rmse: bool = False,
-) -> Any:
-    try:
-        return diffuser.loss(batch_t, compute_batch_rmse=compute_batch_rmse)
-    except TypeError as exc:
-        if "compute_batch_rmse" not in str(exc):
-            raise
-        return diffuser.loss(batch_t)
-
-
 def _build_lr_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg_training: TrainingConfig,
@@ -631,17 +615,11 @@ def _make_sope_train_callbacks(
             batch_idx == (steps_per_epoch - 1)
             or (max_steps is not None and step >= max_steps)
         )
-        loss_out = _call_loss(
-            diffuser=diffuser,
-            batch_t=batch_t,
+        loss, info = diffuser.loss(
+            batch_t,
             compute_batch_rmse=compute_batch_rmse,
         )
-        if isinstance(loss_out, tuple):
-            loss, info = loss_out
-            return loss, info
-        else:
-            loss = loss_out
-            return loss, {}
+        return loss, info
 
     def _format_batch_metrics(
         info: dict[str, Any],
