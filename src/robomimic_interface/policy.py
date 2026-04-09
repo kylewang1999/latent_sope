@@ -25,7 +25,7 @@ class DiffusionPolicy(RolloutPolicy):
 
     def __init__(
         self,
-        policy: Any,
+        policy: Any, #TODO annotate type using robomimic diffusion policy type
         obs_normalization_stats: Optional[dict[str, Any]] = None,
         action_normalization_stats: Optional[dict[str, Any]] = None,
         *,

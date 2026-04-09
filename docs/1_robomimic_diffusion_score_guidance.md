@@ -2,6 +2,7 @@
 
 Relevant code:
 
+- [third_party/sope/opelab/core/baselines/diffusion/helpers.py](../third_party/sope/opelab/core/baselines/diffusion/helpers.py)
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py)
 - [third_party/robomimic/robomimic/config/diffusion_policy_config.py](../third_party/robomimic/robomimic/config/diffusion_policy_config.py)
 - [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
@@ -72,6 +73,26 @@ Current caveat:
   sampler timestep, so guidance remains an approximation even though it is now
   wired end to end for diffusion-policy adapters
 
+### 3.1 Parameterization compatibility
+
+The chunk diffuser and the guidance policy are separate diffusion contracts. In
+particular:
+
+- chunk-side and policy-side parameterizations do not need to match
+- the chunk diffuser always uses its own beta schedule, posterior mean path, and
+  posterior-variance schedule
+- changing chunk-side `predict_epsilon` changes the denoiser training target and
+  the interpretation of the chunk reverse mean, but it does not change the
+  Gaussian noise scale injected by the chunk sampler
+- changing policy-side parameterization changes only the score-conversion
+  formula used inside `grad_log_prob(state, action)`
+
+The current robomimic adapter implements only the epsilon-prediction score
+conversion. So chunk-side `predict_epsilon=False` is supported as long as the
+chunk model remains internally consistent, but policy-side `predict_epsilon=False`
+would require replacing the epsilon-based score conversion with the corresponding
+`predict-x0` form.
+
 ## 4. Why The Backbone Is FiLM-Style
 
 Robomimic's `ConditionalUnet1D` does not instantiate a class literally called
@@ -96,6 +117,16 @@ Each conditioned residual block maps that vector into per-channel scale and bias
 parameters that modulate intermediate convolution features. This is why the
 local diffusion wrapper treats robomimic as the canonical FiLM-conditioned
 backbone.
+
+### 4.1 Contrast with upstream SOPE conditioning
+
+Upstream SOPE uses in-painting-style conditioning: `apply_conditioning(...)`
+overwrites selected trajectory entries inside the sampled tensor, and the
+conditioning is re-applied during reverse sampling.
+
+The local wrapper instead passes the conditioning prefix as an external FiLM
+context to the denoiser. So the local implementation should be described as
+SOPE-inspired rather than identical to upstream SOPE conditioning.
 
 ## 5. Visual Encoder Training Contract
 
