@@ -1,5 +1,8 @@
 # Guidance for SOPE-style chunk diffusion
 
+> [!IMPORTANT]
+> This document reflects substantial manual reasoning by the repository author and should be treated as a high-trust reference. Avoid changing it unless the update is clearly necessary, for example to correct a verified error, fix a broken reference, or document an intentional behavior change already accepted in the codebase.
+
 Notation
 - $\tau = x_{1:H}$ is a trajectory chunk of horizon $H$.
 	- $x_t = (s_t, a_t)$ is the concatenated state-action vector at trajectory time $t$.
@@ -308,7 +311,7 @@ g_{\mathrm{guide}}(\tau^k)
 \end{align}$$
 This gives a clean interpretation of score guidance in the chunk-DDPM sampler: guidance simply shifts the unguided reverse-step mean $\mu_\theta^k(\tau^k,c)$ by the scaled action-only correction $\frac{\beta_k}{\sqrt{\alpha_k}}\, g_{\mathrm{guide}}(\tau^k)$.
 
-So, once the reverse kernel is written in score form as in Proposition 2.1, ==there is no separate "type mismatch"==: an additive score correction induces a corresponding additive shift of the reverse posterior mean. ==What remains problematic is that the padded vector $g_{\mathrm{guide}}(\tau^k)$ is not the score of the same joint chunk model $p_k(\tau^k\mid c)$==; it is an action-only auxiliary score built from the target and behavior policies. In practice, the code allows the user to replace the exact DDPM prefactor $\beta_k/\sqrt{\alpha_k}$ by a user-chosen scale such as `action_scale`, which makes the procedure even more heuristic.
+So, once the reverse kernel is written in score form as in Proposition 2.1, ==there is no separate "type mismatch"==: an additive score correction induces a corresponding additive shift of the reverse posterior mean. ==What remains problematic is that the padded vector $g_{\mathrm{guide}}(\tau^k)$ is not the score of the same joint chunk model $p_k(\tau^k\mid c)$==; it is an action-only auxiliary score built from the target and behavior policies. In practice, the local code replaces the exact DDPM prefactor $\beta_k/\sqrt{\alpha_k}$ by user-chosen heuristics such as `action_score_scale`, optional cosine scheduling, repeated inner updates `num_guidance_iters`, and an explicit action-score postprocess mode, which makes the procedure even more heuristic.
 
 An additional implementation heuristic in SOPE code is to apply the guidance term $\frac{\beta_k}{\sqrt{\alpha_k}}\, g_{\mathrm{guide}}(\tau^k)$ several times with a smaller step size, updating the current noisy chunk after each sub-step and then re-evaluating $g_{\mathrm{guide}}$ at the new point. 
 
@@ -336,18 +339,30 @@ The derivations above should be treated as the authoritative reference for the d
 
 ### 3.2 Guidance mean shift
 
-- [`guided_sampling`](../src/sampling.py#L234) is the local implementation of the mean-shift heuristic: it calls `model.p_mean_variance(...)`, leaves the model variance unchanged, and adds the guidance tensor directly to `model_mean`.
-- [`_compute_film_policy_gradient`](../src/sampling.py#L124), [`_compute_film_negative_gradient`](../src/sampling.py#L143), [`_combine_film_guide`](../src/sampling.py#L166), and [`_scale_film_guide`](../src/sampling.py#L191) implement the target-policy term, behavior-policy subtraction, guide combination rule, and user- or schedule-dependent scaling.
-- [`run_film_p_sample_loop`](../src/sampling.py#L308) repeats that guided reverse-step update over the full diffusion chain and optionally records per-step model predictions and guidance tensors.
+- [`guided_sample_step`](../src/sampling.py#L221) is the local implementation of the mean-shift heuristic: it calls `model.p_mean_variance(...)`, leaves the model variance unchanged, and adds the guidance tensor directly to `model_mean`.
+- [`prepare_guidance`](../src/sampling.py#L144) now owns the whole target- and behavior-policy score path: it flattens the current chunk into per-timestep `(state, action)` pairs, queries the action-only score, applies the explicit postprocess rule, combines target and behavior scores, applies schedule-dependent scaling, and then pads zeros on the state channels so the returned guide matches `model_mean`.
+- [`run_p_sample_loop`](../src/sampling.py#L287) repeats that guided reverse-step update over the full diffusion chain and optionally records per-step model predictions and guidance tensors.
 
-### 3.3 Single-step action-score contract
+### 3.3 Action-score postprocess contract
+
+The local FiLM sampler now exposes an explicit action-score postprocess API:
+
+- `action_score_postprocess="none"` keeps target and behavior action scores raw
+- `action_score_postprocess="l2"` L2-normalizes each per-timestep score vector
+- `action_score_postprocess="clamp"` clips both score tensors elementwise to `[-clamp_linf, clamp_linf]`
+- `action_neg_score_weight` always scales the already-postprocessed behavior score before subtraction
+
+This is a local API cleanup, not an attempt to preserve the exact branch encoding
+of the earlier upstream-derived guidance switches.
+
+### 3.4 Single-step action-score contract
 
 - [`gradlog_diffusion`](../third_party/sope/opelab/core/baselines/diffusion/diffusion.py#L94) is the upstream SOPE helper that realizes the timestep-wise contract described at the end of Section 2.2: flatten the $N \times T$ state-action pairs, call `policy.grad_log_prob`, reshape, and pad zeros on the state coordinates.
-- [`DiffusionScorePolicy`](../src/sampling.py#L18) records the corresponding local interface: `grad_log_prob(state, action)`.
-- [`DiffusionPolicy.grad_log_prob`](../src/robomimic_interface/policy.py#L144) is the current robomimic adapter. It converts the denoiser output into the `predict-epsilon` score estimate $-\hat{\epsilon}/\sqrt{1-\bar{\alpha}_k}$, but it currently uses the fixed timestep specified by [`DiffusionPolicyScoreConfig.score_timestep`](../src/robomimic_interface/policy.py#L12) rather than the active chunk-sampler timestep.
-- [`DiffusionPolicy._prepare_obs_cond`](../src/robomimic_interface/policy.py#L67) and [`DiffusionPolicy._prepare_action_sequence`](../src/robomimic_interface/policy.py#L96) show how a single `(state, action)` pair is expanded to match the robomimic observation and action horizons before the score is queried.
+- [`ScorePolicy`](../src/sampling.py#L18) records the corresponding local interface: `grad_log_prob(state, action)`.
+- [`DiffusionPolicy.grad_log_prob`](../src/robomimic_interface/policy.py#L151) is the current robomimic adapter. It converts the denoiser output into the `predict-epsilon` score estimate $-\hat{\epsilon}/\sqrt{1-\bar{\alpha}_k}$, uses the fixed timestep specified by [`DiffusionPolicyScoreConfig.score_timestep`](../src/robomimic_interface/policy.py#L19) rather than the active chunk-sampler timestep, and then collapses the chunk score back to a single action by selecting `action_start_index = observation_horizon - 1`.
+- [`DiffusionPolicy._prepare_obs_cond`](../src/robomimic_interface/policy.py#L74) and [`DiffusionPolicy._prepare_action_sequence`](../src/robomimic_interface/policy.py#L103) show how a single `(state, action)` pair is expanded to match the robomimic observation and action horizons before that single-step score is extracted.
 
-### 3.4 Conditioning semantics
+### 3.5 Conditioning semantics
 
 - [`apply_conditioning`](../third_party/sope/opelab/core/baselines/diffusion/helpers.py#L159) is the upstream in-painting-style conditioning primitive discussed in the older SOPE contract note.
 - [`FilmConditionedBackbone`](../src/diffusion.py#L183) and [`FilmGaussianDiffusion.p_losses`](../src/diffusion.py#L416) are the local FiLM-conditioned counterparts: the prefix is supplied through `cond`, not by clamping entries inside the trajectory tensor after each denoising step.

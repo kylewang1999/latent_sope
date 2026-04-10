@@ -23,7 +23,7 @@ from third_party.robomimic.robomimic.models.diffusion_policy_nets import (
 from third_party.sope.opelab.core.baselines.diffusion.diffusion import (
     GaussianDiffusion,
 )
-from src.sampling import guided_sampling, run_film_p_sample_loop
+from src.sampling import guided_sample_step, run_p_sample_loop
 
 
 @dataclass(frozen=True)
@@ -349,14 +349,14 @@ class FilmGaussianDiffusion(GaussianDiffusion):
         *,
         verbose: bool = True,
         return_chain: bool = False,
-        sample_fn: Any = guided_sampling,
+        sample_fn: Any = guided_sample_step,
         guided: bool = False,
         guidance_hyperparams: Optional[dict[str, Any]] = None,
         return_info: bool = False,
         **sample_kwargs: Any,
     ) -> Any:
         """Run the reverse DDPM loop with FiLM context instead of in-paint reconditioning."""
-        return run_film_p_sample_loop(
+        sample, info = run_p_sample_loop(
             self,
             shape,
             cond,
@@ -368,6 +368,9 @@ class FilmGaussianDiffusion(GaussianDiffusion):
             return_info=return_info,
             **sample_kwargs,
         )
+        if return_info:
+            return sample, info
+        return sample
 
     def conditional_sample(
         self,
@@ -376,28 +379,26 @@ class FilmGaussianDiffusion(GaussianDiffusion):
         *,
         verbose: bool = True,
         return_chain: bool = False,
-        action_scale: float = 0.2,
+        action_score_scale: float = 0.2,
         guided: bool = False,
         use_adaptive: bool = True,
         use_neg_grad: bool = True,
-        normalize_grad: bool = True,
-        k_guide: int = 2,
+        action_score_postprocess: Literal["none", "l2", "clamp"] = "l2",
+        num_guidance_iters: int = 2,
         return_info: bool = False,
-        clamp: bool = False,
-        l_inf: float = 1.0,
-        ratio: float = 1.0,
+        clamp_linf: float = 1.0,
+        action_neg_score_weight: float = 1.0,
         **sample_kwargs: Any,
     ) -> Any:
-        """Preserve SOPE's public sampling interface for the FiLM-conditioned sampler."""
+        """Expose the local FiLM-guidance API for chunk sampling."""
         guidance_hyperparams = {
-            "action_scale": action_scale,
+            "action_score_scale": action_score_scale,
             "use_adaptive": use_adaptive,
             "use_neg_grad": use_neg_grad,
-            "normalize_grad": normalize_grad,
-            "k_guide": k_guide,
-            "l_inf": l_inf,
-            "ratio": ratio,
-            "clamp": clamp,
+            "action_score_postprocess": action_score_postprocess,
+            "num_guidance_iters": num_guidance_iters,
+            "clamp_linf": clamp_linf,
+            "action_neg_score_weight": action_neg_score_weight,
         }
         batch_size = shape[0]
         horizon = shape[1]
@@ -458,7 +459,6 @@ class FilmGaussianDiffusion(GaussianDiffusion):
     def forward(self, cond: Optional[torch.Tensor], *args: Any, **kwargs: Any) -> Any:
         """Preserve the base module contract by routing calls to conditional sampling."""
         return super().forward(cond, *args, **kwargs)
-
 
 @dataclass(frozen=True)
 class SopeDiffusionConfig:

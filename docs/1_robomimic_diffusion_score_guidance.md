@@ -64,8 +64,16 @@ In the current repo that means:
   reconstructs the robomimic policy internals and exposes `grad_log_prob(...)`
 - [src/sampling.py](../src/sampling.py) assumes both target and behavior
   policies follow that same diffusion-policy contract
+- [src/diffusion.py](../src/diffusion.py) exposes the local FiLM guidance knobs
+  `action_score_postprocess`, `action_neg_score_weight`, and `clamp_linf`
 - guidance edits only action channels; the local sampler does not treat the
   policy as a scorer over state coordinates
+
+The current local chunk contract is:
+
+- `states`: `[B, H, Ds]`
+- `actions`: `[B, H, Da]`
+- `grad_log_prob(states, actions)`: `[B, H, Da]`
 
 Current caveat:
 
