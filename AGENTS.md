@@ -18,6 +18,8 @@ This file is a reusable template for research-oriented codebases. It keeps the s
 - If the repository uses numbered docs, keep the numbering monotonic, for example `1_overview.md`, `2_training.md`, `3_sampling.md`.
 - For `.md` files in `docs/`, number second- and third-level headings consistently, for example `## 1. Section` and `### 1.1 Subsection`.
 - If a change affects experimental behavior, document what should be re-run to validate it.
+- Treat `docs/reports/` as reserved for the user's manual advisor-meeting or weekly-summary notes. Do not create or update files under `docs/reports/` unless the user explicitly asks for that location.
+- When a new technical or operational note is needed by default, place it directly under `docs/` or another explicitly requested topical subdirectory, not under `docs/reports/`.
 
 ### 2.2. Equation formatting
 
