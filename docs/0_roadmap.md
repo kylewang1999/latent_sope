@@ -46,18 +46,21 @@ and OPE estimates can be interpreted together.
 Use these notes as the current owners of each topic:
 
 - [docs/1_robomimic_diffusion_score_guidance.md](./1_robomimic_diffusion_score_guidance.md)
-  for robomimic guidance, FiLM conditioning, parameterization caveats, and
-  visual-backbone behavior
+  for robomimic guidance, FiLM conditioning, parameterization caveats,
+  visual-backbone behavior, and the local adapter score-config surface
 - [docs/2_reward_predictor.md](./2_reward_predictor.md) for reward-model
   semantics
 - [docs/3_training_pipeline.md](./3_training_pipeline.md) for training and
-  evaluation entrypoints together with rollout-dataset workflows, chunk-contract
-  semantics, and debug modes
-- [docs/6_autoregressive_trajectory_generation.md](./6_autoregressive_trajectory_generation.md)
+  evaluation entrypoints together with rollout-dataset workflows,
+  environment-bootstrap behavior, chunk-contract semantics, and debug modes
+- [docs/5_autoregressive_trajectory_generation.md](./5_autoregressive_trajectory_generation.md)
   for rollout generation, OPE returns, and rollout reporting metrics
-- [docs/8_more_on_guidance.md](./8_more_on_guidance.md) for the detailed
-  action-guidance derivation, DDPM guidance math, and score-contract
-  interpretation
+- [docs/6_guided_trajectory_sampling.md](./6_guided_trajectory_sampling.md)
+  for the detailed action-guidance derivation, DDPM guidance math, and
+  score-contract interpretation
+- [docs/7_policy_score_interface.md](./7_policy_score_interface.md) for the
+  local policy-score interface, action-score postprocessing contract, and
+  behavior-score weighting semantics
 
 ## 4. Validation Priorities
 

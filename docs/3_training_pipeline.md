@@ -1,11 +1,12 @@
-# Training Pipeline, Policy Preparation, And Data Workflows
+# Training Pipeline, Environment Bootstrap, Policy Preparation, And Data Workflows
 
-This note consolidates the repository's training-pipeline and training-entrypoint
-documentation together with the adjacent policy-preparation and rollout-dataset
-workflows.
+This note consolidates the repository's training-pipeline, training-entrypoint,
+environment-bootstrap, policy-preparation, and rollout-dataset workflows.
 
 Relevant code:
 
+- [bootstrap_env.sh](../bootstrap_env.sh)
+- [bootstrap_egl.sh](../bootstrap_egl.sh)
 - [src/utils.py](../src/utils.py)
 - [src/train.py](../src/train.py)
 - [src/diffusion.py](../src/diffusion.py)
@@ -18,11 +19,14 @@ Relevant code:
 - [src/robomimic_interface/rollout.py](../src/robomimic_interface/rollout.py)
 - [src/robomimic_interface/checkpoints.py](../src/robomimic_interface/checkpoints.py)
 - [src/sope_interface/dataset.py](../src/sope_interface/dataset.py)
+- [third_party/robomimic/setup.py](../third_party/robomimic/setup.py)
 
 ## 1. Summary
 
 The active training stack uses:
 
+- [bootstrap_env.sh](../bootstrap_env.sh) and [bootstrap_egl.sh](../bootstrap_egl.sh)
+  as the canonical environment-bootstrap path
 - [src/train.py](../src/train.py) as the canonical orchestration module
 - [src/diffusion.py](../src/diffusion.py) as the canonical diffusion wrapper
 - [scripts/prepare_policy_hm-image.py](../scripts/prepare_policy_hm-image.py)
@@ -246,13 +250,67 @@ Two debugging paths remain useful when investigating this stack:
 These are debugging tools, not the main contract that the rollout-backed SOPE
 wrapper is trying to preserve.
 
-## 7. Validation
+## 7. Environment Bootstrap
+
+The repository bootstrap path is intentionally part of the same operational
+surface as training and rollout generation, because rebuilding the environment
+incorrectly can break robomimic, MuJoCo rendering, or the guidance stack before
+any experiment code runs.
+
+### 7.1 Bootstrap Strategy
+
+[`bootstrap_env.sh`](../bootstrap_env.sh) now:
+
+- installs PyTorch explicitly
+- installs modern JAX explicitly
+- installs robomimic runtime dependencies explicitly
+- installs a modern Hugging Face stack explicitly
+- installs robomimic editable with `--no-deps --no-build-isolation`
+- installs clean_diffuser editable with `--no-deps --no-build-isolation`
+
+This avoids robomimic's stale dependency pins from
+[`third_party/robomimic/setup.py`](../third_party/robomimic/setup.py), which
+still include:
+
+- `diffusers==0.11.1`
+- `transformers==4.41.2`
+- `huggingface_hub==0.23.4`
+
+### 7.2 Why This Is Needed
+
+The incompatibility comes from mixing an old `diffusers` release with a modern
+JAX release. In that configuration, later robomimic imports can fail because
+old `diffusers` code expects symbols such as `jax.random.KeyArray` that are no
+longer present in newer JAX.
+
+The chosen fix is preventive rather than reparative:
+
+- do not let robomimic install its pinned Hugging Face packages in the first
+  place
+- keep the desired modern stack in place throughout bootstrap
+
+### 7.3 EGL Hook Behavior
+
+[`bootstrap_egl.sh`](../bootstrap_egl.sh) installs conda activation hooks that
+default MuJoCo rendering to EGL:
+
+- `MUJOCO_GL=egl`
+- `PYOPENGL_PLATFORM=egl`
+- `MUJOCO_EGL_DEVICE_ID=0` by default
+
+It also checks the active environment for the old-`diffusers` / new-JAX hazard
+and upgrades the Hugging Face stack when the problematic combination is
+detected.
+
+## 8. Validation
 
 The lightweight validation for the current training stack is:
 
 ```bash
 source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/utils.py src/train.py src/diffusion.py src/eval.py scripts/train_sope.py scripts/train_sope_gym.py src/robomimic_interface/dataset.py src/robomimic_interface/rollout.py src/robomimic_interface/checkpoints.py src/sope_interface/dataset.py
 source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile scripts/create_rollout_dataset.py scripts/prepare_policy_hm-image.py
+bash -n bootstrap_env.sh
+bash -n bootstrap_egl.sh
 source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python3 scripts/train_sope.py --help
 source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python3 scripts/train_sope_gym.py --help
 source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python3 scripts/create_rollout_dataset.py --help

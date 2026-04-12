@@ -81,7 +81,20 @@ Current caveat:
   sampler timestep, so guidance remains an approximation even though it is now
   wired end to end for diffusion-policy adapters
 
-### 3.1 Parameterization compatibility
+### 3.1 Local Adapter Config Surface
+
+[`DiffusionPolicyScoreConfig`](../src/robomimic_interface/policy.py) now keeps
+only the fixed `score_timestep` knob.
+
+The older local `repeat_single_state_to_horizon` branch has been removed. When
+the adapter receives a single-step encoded observation with shape
+`[B, Dobs_feat]`, it now always repeats that feature vector across the
+robomimic observation horizon before flattening to `obs_cond`.
+
+This keeps the local adapter contract smaller and matches the only mode that
+was actually being used in the repository.
+
+### 3.2 Parameterization Compatibility
 
 The chunk diffuser and the guidance policy are separate diffusion contracts. In
 particular:

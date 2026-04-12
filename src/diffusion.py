@@ -518,6 +518,8 @@ class SopeDiffuser:
         self.state_dim = int(cfg.state_dim)
         self.action_dim = int(cfg.action_dim)
         self.transition_dim = self.state_dim + self.action_dim
+        self._validate_policy_obs_horizon(policy, role="target policy")
+        self._validate_policy_obs_horizon(behavior_policy, role="behavior policy")
 
         self.normalization_stats = normalization_stats
         self.normalizer, self.unnormalizer = make_normalizers(normalization_stats)
@@ -550,6 +552,23 @@ class SopeDiffuser:
         self.diffusion.policy = policy
         self.diffusion.behavior_policy = behavior_policy
         self._configure_diffusion_loss_targets()
+
+    def _validate_policy_obs_horizon(
+        self,
+        policy: Optional[Any],
+        *,
+        role: str,
+    ) -> None:
+        if policy is None:
+            return
+        assert hasattr(policy, "observation_horizon"), (
+            f"{role} must expose observation_horizon for robomimic horizon validation."
+        )
+        assert int(self.cfg.frame_stack) == int(policy.observation_horizon), (
+            "SOPE frame_stack must match the robomimic observation_horizon when "
+            f"using {role} guidance: got frame_stack={self.cfg.frame_stack}, "
+            f"{role}.observation_horizon={policy.observation_horizon}."
+        )
 
     def _resolve_eef_pos_slice(self) -> slice:
         """Return the low-dim robomimic slice corresponding to `robot0_eef_pos`."""

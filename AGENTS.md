@@ -105,6 +105,8 @@ class EnvironmentConfig:
 - Add small helper functions around repeated tensor transformations, schedule computations, or batching logic rather than duplicating opaque code blocks.
 - Preserve a clear path from paper equation or algorithm step to implementation.
 - If behavior is subtle, add a short code comment explaining the invariant or the reason a step exists.
+- For straightforward invariant checks, prefer `assert <condition>, "<message>"` over an `if ...: raise ...` block when the goal is to state an internal shape or contract assumption directly and concisely.
+- When referring to the number of tensor dimensions, use `ndim` rather than `rank`.
 
 ### 2.10. Validation expectations
 
