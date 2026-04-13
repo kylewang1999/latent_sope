@@ -1,13 +1,15 @@
 # Latent Rollout → Chunk Diffuser Pipeline
 
-This document describes the end-to-end pipeline for collecting visual latent rollouts from a trained behavior policy and training a SOPE chunk diffuser on them.
+This document describes the end-to-end pipeline for training a behavior policy, collecting visual latent rollouts from it, and training a SOPE chunk diffuser on them.
 
 ---
 
 ## Overview
 
 ```
-Behavior Policy Checkpoint
+0. Train Behavior Policy     train_diffusion_mh.sh
+   (download demos, render
+    images, train DiffusionPolicyUNet)
         │
         ▼
 1. Collect Rollouts          collect_rollout_latents.py
@@ -22,6 +24,68 @@ Behavior Policy Checkpoint
         │
         ▼
 3. Evaluate                  eval_diffuser_rmse.py
+```
+
+---
+
+## Stage 0 — Train Behavior Policy
+
+**Script:** `scripts/train_diffusion_mh.sh`
+
+Downloads the robomimic MH demonstration datasets, renders image observations, and trains a `DiffusionPolicyUNet` behavior policy for each task using robomimic. Saves checkpoints at fixed epochs for use in rollout collection.
+
+### Command
+
+```bash
+bash scripts/train_diffusion_mh.sh
+```
+
+No arguments — tasks (`lift`, `can`) and epochs (`50, 100, 200, 300, 400, 500, 600`) are hardcoded in the script.
+
+### What it does
+
+**Step 1 — Download raw demos:**
+```bash
+python -m robomimic.scripts.download_datasets \
+    --tasks lift can \
+    --dataset_types mh \
+    --hdf5_types raw \
+    --download_dir third_party/robomimic/datasets
+```
+Downloads multi-human (MH) demonstration `.hdf5` files for `lift` and `can` tasks.
+
+**Step 2 — Render image observations:**
+```bash
+python dataset_states_to_obs.py \
+    --done_mode 2 \
+    --dataset demo_v15.hdf5 \
+    --output_name image_v15.hdf5 \
+    --camera_names agentview robot0_eye_in_hand \
+    --camera_height 84 \
+    --camera_width 84
+```
+Re-renders each demo at 84×84 resolution with agentview and wrist cameras, producing `image_v15.hdf5`.
+
+**Step 3 — Train diffusion policy:**
+```bash
+python -m robomimic.scripts.train \
+    --config robomimic/exps/templates/diffusion_policy_{task}_mh_image.json
+```
+Trains a robomimic `DiffusionPolicyUNet` (prediction_horizon=16, action_horizon=1). Checkpoints are saved at epochs 50, 100, 200, 300, 400, 500, 600.
+
+### Output
+
+```
+third_party/robomimic/diffusion_policy_trained_models/
+  lift_mh/lift_mh_diffusion/<run>/
+    config.json
+    models/
+      model_epoch_50.pth
+      model_epoch_100.pth
+      ...
+      model_epoch_600.pth
+  can_mh/can_mh_diffusion/<run>/
+    ...
 ```
 
 ---
