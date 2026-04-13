@@ -102,7 +102,22 @@ postprocessing the behavior score.
 - [`FilmGaussianDiffusion.conditional_sample`](../src/diffusion.py#L372)
   exposes the renamed public sampler kwargs.
 
-## 6. Validation
+## 6. Scheduler Device Handling
+
+`DiffusionPolicy.grad_log_prob(...)` converts robomimic's predicted epsilon
+into a score by reading `noise_scheduler.alphas_cumprod` at the configured
+guidance timestep.
+
+That scheduler tensor is not part of the robomimic module tree, so moving the
+policy network to CUDA does not guarantee that `alphas_cumprod` moves with it.
+The adapter now materializes `alphas_cumprod` on the current action / denoiser
+device before gathering the per-query $\bar{\alpha}_t$ values.
+
+Before this fix, guided OPE runs could fail on CUDA with a device-mismatch
+error when indexing a CPU scheduler tensor using a CUDA timestep tensor. After
+the fix, the score-conversion path uses the same device as the denoiser output.
+
+## 7. Validation
 
 The minimal validation for this change is:
 

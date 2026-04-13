@@ -44,6 +44,10 @@ try:
 except ModuleNotFoundError as exc:
     FileUtils = None
     _FILEUTILS_IMPORT_ERROR = exc
+try:
+    import robomimic.utils.obs_utils as CanonicalObsUtils
+except ModuleNotFoundError:
+    CanonicalObsUtils = None
 import third_party.robomimic.robomimic.utils.obs_utils as ObsUtils
 from third_party.robomimic.robomimic.algo import algo_factory, RolloutPolicy, PolicyAlgo
 from third_party.robomimic.robomimic.config.base_config import config_factory
@@ -230,6 +234,25 @@ def _convert_normalization_stats(
     return _convert(stats)
 
 
+def _initialize_obs_utils_with_config(config: Any) -> None:
+    """Initialize both robomimic obs-utils module namespaces.
+
+    The local codebase imports robomimic through both:
+    - `third_party.robomimic.robomimic.*`
+    - `robomimic.*`
+
+    Network construction ultimately reads modality globals from the canonical
+    `robomimic.utils.obs_utils` module, so initialize that registry first and
+    mirror the state into the vendored namespace when they are distinct module
+    objects.
+    """
+
+    if CanonicalObsUtils is not None:
+        CanonicalObsUtils.initialize_obs_utils_with_config(config)
+    if CanonicalObsUtils is None or ObsUtils is not CanonicalObsUtils:
+        ObsUtils.initialize_obs_utils_with_config(config)
+
+
 def load_checkpoint(
     run_dir: Path,
     ckpt_path: Optional[Path] = None,
@@ -319,7 +342,7 @@ def build_algo_from_checkpoint(
             raise KeyError("Checkpoint missing 'config' key")
         config_dict = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
         config = config_factory(algo_name, dic=config_dict)
-    ObsUtils.initialize_obs_utils_with_config(config)
+    _initialize_obs_utils_with_config(config)
 
     shape_md = ckpt_dict.get("shape_metadata", None)
     if shape_md is None:

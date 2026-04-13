@@ -10,6 +10,7 @@ scripts/
 !scripts/
 scripts/*
 !scripts/train_sope_gym.py
+!scripts/test_ope_guided.py
 !scripts/inspect_sope_gym_pdataset.ipynb
 logs*/
 *datasets/

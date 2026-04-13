@@ -334,8 +334,15 @@ class DiffusionPolicy(RolloutPolicy):
             global_cond=obs_cond,
         )
 
-        alpha_bar = self.policy.noise_scheduler.alphas_cumprod[timestep_tensor]
-        score_scale = torch.sqrt(torch.clamp(1.0 - alpha_bar, min=1e-6)).view(-1, 1, 1)
+        # Diffusers schedulers keep coefficient tensors outside the module tree,
+        # so they may remain on CPU even when the policy network runs on CUDA.
+        alpha_bar = torch.as_tensor(
+            self.policy.noise_scheduler.alphas_cumprod,
+            device=noise_pred.device,
+        )[timestep_tensor.to(device=noise_pred.device)]
+        score_scale = torch.sqrt(
+            torch.clamp(1.0 - alpha_bar, min=1e-6),
+        ).to(dtype=noise_pred.dtype).view(-1, 1, 1)
         # Per-step chunk score surrogate extracted from epsilon prediction: [(B * H), Tp, Da].
         score_seq = -noise_pred / score_scale
         # Collapse back to one action score per flattened step, then restore [B, H, Da].
