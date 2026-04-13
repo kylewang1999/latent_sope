@@ -35,6 +35,7 @@ class TrainingConfig:
     weight_decay: float = 0.0
     grad_clip: float = 1.0
     max_steps: Optional[int] = None
+    lr_schedule: Optional[str] = None  # None or "cosine"
     log_every: int = 50
     save_every: int = 1
     seed: int = 0
@@ -95,10 +96,16 @@ def _as_paths(paths: Sequence[PathLike]) -> list[Path]:
     return [p if isinstance(p, Path) else Path(p) for p in paths]
 
 
+def _load_latest_checkpoint(checkpoint_dir: Path) -> Optional[Path]:
+    candidates = sorted(checkpoint_dir.glob("sope_diffuser_epoch_*.pt"))
+    return candidates[-1] if candidates else None
+
+
 def train(
     cfg_dataset: RolloutChunkDatasetConfig,
     cfg_diffusion: SopeDiffusionConfig,
     cfg_training: TrainingConfig,
+    resume: bool = False,
 ) -> None:
     set_global_seed(cfg_training.seed)
 
@@ -131,15 +138,29 @@ def train(
         lr=cfg_training.lr,
         weight_decay=cfg_training.weight_decay,
     )
+    scheduler = None
+    if cfg_training.lr_schedule == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cfg_training.epochs, eta_min=1e-6
+        )
 
     checkpoint_dir = Path(cfg_training.checkpoint_dir) if cfg_training.checkpoint_dir else None
     if checkpoint_dir is not None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         _save_configs(checkpoint_dir / "configs.json", cfg_diffusion, cfg_dataset)
 
+    start_epoch = 1
     step = 0
+    if resume and checkpoint_dir is not None:
+        ckpt_path = _load_latest_checkpoint(checkpoint_dir)
+        if ckpt_path is not None:
+            payload = torch.load(str(ckpt_path), map_location=device_str, weights_only=False)
+            diffuser.diffusion.load_state_dict(payload["diffusion_state_dict"])
+            start_epoch = int(payload["epoch"]) + 1
+            step = int(payload["step"])
+            print(f"Resumed from {ckpt_path.name} (epoch {start_epoch - 1}, step {step})")
     max_steps = cfg_training.max_steps if cfg_training.max_steps and cfg_training.max_steps > 0 else None
-    for epoch in range(1, cfg_training.epochs + 1):
+    for epoch in range(start_epoch, cfg_training.epochs + 1):
         for batch in loader:
             step += 1
             batch_t = _to_device(batch, device)
@@ -174,6 +195,9 @@ def train(
 
             if max_steps and step >= max_steps:
                 break
+
+        if scheduler is not None:
+            scheduler.step()
 
         if checkpoint_dir is not None:
             if epoch % cfg_training.save_every == 0 or epoch == cfg_training.epochs:

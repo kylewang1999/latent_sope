@@ -54,7 +54,7 @@ def make_normalizers(stats: Optional[NormalizationStats]) -> Tuple[Callable, Cal
         return (lambda x: x), (lambda x: x)
 
     mean = stats.mean
-    std = stats.std
+    std = np.clip(stats.std, a_min=1e-3, a_max=None)  # prevent division by near-zero std
 
     def _norm(x):
 

@@ -33,6 +33,8 @@ def compute_normalization_stats(x: np.ndarray) -> NormalizationStats:
 def _collect_frame_stack(latents: np.ndarray, t0: int, frame_stack: int) -> np.ndarray:
     """Collect past frames ending (inclusive) at t0, padding by duplicating earliest frame when needed."""
     assert latents.ndim == 2, f"Expected latents with shape (T, D), got {latents.shape}"
+    if frame_stack == 0:
+        return np.empty((0, latents.shape[-1]), dtype=latents.dtype)
     frames = []
     for i in range(frame_stack):
         t_i = max(0, t0 - (frame_stack - 1 - i))

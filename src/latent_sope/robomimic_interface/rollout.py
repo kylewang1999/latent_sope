@@ -11,14 +11,28 @@ import h5py
 
 import torch
 import numpy as np
-import robomimic.utils.obs_utils as ObsUtils
-from robomimic.models.obs_nets import ObservationEncoder
-from robomimic.algo import RolloutPolicy, PolicyAlgo
-from robomimic.utils import tensor_utils as TensorUtils
-from robomimic.envs.env_base import EnvBase
 
-from src.latent_sope.robomimic_interface.encoders import resolve_module
-from src.latent_sope.utils.common import timeit
+import time
+
+def timeit(func):
+    from functools import wraps
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        t0 = time.time()
+        result = func(*args, **kwargs)
+        print(f"{func.__name__} took {time.time() - t0:.2f}s")
+        return result
+    return wrapper
+
+def _import_robomimic():
+    """Lazy import of robomimic to avoid breaking training-only pipelines."""
+    import robomimic.utils.obs_utils as ObsUtils
+    from robomimic.models.obs_nets import ObservationEncoder
+    from robomimic.algo import RolloutPolicy, PolicyAlgo
+    from robomimic.utils import tensor_utils as TensorUtils
+    from robomimic.envs.env_base import EnvBase
+    from src.latent_sope.robomimic_interface.encoders import resolve_module
+    return ObsUtils, ObservationEncoder, RolloutPolicy, PolicyAlgo, TensorUtils, EnvBase, resolve_module
 
 @dataclass
 class RolloutStats:
@@ -58,6 +72,10 @@ class PolicyFeatureHook:
         feat_type: str = "low_dim_concat",
         rgb_key: Optional[str] = None,   # optional override for visual_latent
     ):
+        (self._ObsUtils, self._ObservationEncoder, self._RolloutPolicy,
+         self._PolicyAlgo, self._TensorUtils, self._EnvBase,
+         self._resolve_module) = _import_robomimic()
+
         feat_type = str(feat_type).lower()
         assert feat_type in {"low_dim_concat", "high_dim_encode", "visual_latent"}, f"Unknown feat_type: {feat_type}"
 
@@ -113,7 +131,7 @@ class PolicyFeatureHook:
                 for rand in reversed(self._randomizers):
                     if rand is not None:
                         x = rand.forward_out(x)
-                x = TensorUtils.flatten(x, begin_axis=1).detach()
+                x = self._TensorUtils.flatten(x, begin_axis=1).detach()
                 self._last_feature = x
 
             self._vis_hook_handle = self._visual_net.register_forward_hook(_vis_hook)
@@ -142,7 +160,7 @@ class PolicyFeatureHook:
         ]
         for path in candidates:
             try:
-                mod = resolve_module(self.policy, path)
+                mod = self._resolve_module(self.policy, path)
             except Exception:
                 continue
             if hasattr(mod, "register_forward_hook"):
@@ -156,7 +174,7 @@ class PolicyFeatureHook:
             "Pass a policy with nets['policy'] or a policy module that supports hooks."
         )
 
-    def _resolve_obs_encoder(self) -> ObservationEncoder:
+    def _resolve_obs_encoder(self):
         """
         Find the first ObservationEncoder inside the rollout-time policy object.
         We try a few roots (policy wrapper, nested policy net) to avoid hooking
@@ -188,7 +206,7 @@ class PolicyFeatureHook:
 
         for r in unique_roots:
             for name, m in getattr(r, "named_modules", lambda: [])():
-                if isinstance(m, ObservationEncoder):
+                if isinstance(m, self._ObservationEncoder):
                     return m
 
         raise RuntimeError(
@@ -196,9 +214,9 @@ class PolicyFeatureHook:
             "This checkpoint may not be vision-enabled (no rgb modality in obs encoder)."
         )
 
-    def _pick_rgb_key(self, obs_encoder: ObservationEncoder) -> str:
+    def _pick_rgb_key(self, obs_encoder) -> str:
         keys = list(obs_encoder.obs_shapes.keys())
-        rgb_keys = [k for k in keys if ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb")]
+        rgb_keys = [k for k in keys if self._ObsUtils.key_is_obs_modality(key=k, obs_modality="rgb")]
         if len(rgb_keys) == 0:
             raise RuntimeError(f"No rgb keys in ObservationEncoder.obs_shapes. Keys were: {keys}")
         return rgb_keys[0]
@@ -206,7 +224,7 @@ class PolicyFeatureHook:
     # ----------------------------
     # policy / shape helpers
     # ----------------------------
-    def _get_policy_algo(self) -> PolicyAlgo:
+    def _get_policy_algo(self):
         return getattr(self.policy, "policy", self.policy)
 
     def _get_obs_shapes(self) -> Dict[str, Any]:
@@ -245,7 +263,7 @@ class PolicyFeatureHook:
             return
 
         inputs = _prepare_obs_inputs(obs, goal=goal)
-        _ = TensorUtils.time_distributed(inputs, self._policy_module, inputs_as_kwargs=True)
+        _ = self._TensorUtils.time_distributed(inputs, self._policy_module, inputs_as_kwargs=True)
 
     def ensure_feature(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
         if self._last_feature is None:
@@ -407,7 +425,7 @@ def _get_nested_attr(obj: Any, path: str) -> Any:
     return cur
 
 
-def get_policy_frame_stack(policy: PolicyAlgo, default: int = 1) -> int:
+def get_policy_frame_stack(policy: Any, default: int = 1) -> int:
     """Best-effort retrieval of frame_stack from a robomimic policy."""
     candidates = [
         "policy.algo_config.horizon.observation_horizon", # default
@@ -539,8 +557,8 @@ def load_rollout_latents(path: Path) -> RolloutLatentTrajectory:
 
 @timeit
 def rollout(
-    policy: RolloutPolicy,
-    env: EnvBase,
+    policy: Any,
+    env: Any,
     horizon: int,
     render: bool = False,
     video_writer=None,
