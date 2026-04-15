@@ -61,6 +61,9 @@ Use these notes as the current owners of each topic:
 - [docs/7_policy_score_interface.md](./7_policy_score_interface.md) for the
   local policy-score interface, action-score postprocessing contract, and
   behavior-score weighting semantics
+- [docs/12_robomimic_full_chunk_score_interface.md](./12_robomimic_full_chunk_score_interface.md)
+  for the exact robomimic chunk-score path, legacy fallback behavior, and
+  prefix-state / prefix-action guidance context
 
 ## 4. Validation Priorities
 

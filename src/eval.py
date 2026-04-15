@@ -305,6 +305,20 @@ def _build_persistence_baseline_chunk(
     return diffuser.unnormalizer(baseline)
 
 
+def _build_guidance_prefix_context(
+    diffuser: Any,
+    batch: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
+        return {}
+    prefix_chunk = torch.cat([batch["states_from"], batch["actions_from"]], dim=-1)
+    prefix_chunk = diffuser.unnormalizer(prefix_chunk)
+    return {
+        "prefix_states": prefix_chunk[..., : diffuser.state_dim],
+        "prefix_actions": prefix_chunk[..., diffuser.state_dim :],
+    }
+
+
 def _sample_future_chunk_normalized(
     diffuser: Any,
     batch: dict[str, torch.Tensor],
@@ -314,6 +328,8 @@ def _sample_future_chunk_normalized(
     verbose: bool = False,
 ) -> torch.Tensor:
     cond = diffuser.make_cond(batch)
+    guidance_kwargs = dict(guidance_kw or {})
+    guidance_kwargs.update(_build_guidance_prefix_context(diffuser, batch))
     sample = diffuser.diffusion.conditional_sample(
         shape=(
             int(batch["states_from"].shape[0]),
@@ -323,7 +339,7 @@ def _sample_future_chunk_normalized(
         cond=cond,
         guided=guided,
         verbose=verbose,
-        **(guidance_kw or {}),
+        **guidance_kwargs,
     )
     if getattr(diffuser.cfg, "conditioning_mode", "prefix_states") == "none":
         return sample.trajectories

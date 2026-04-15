@@ -1,41 +1,4 @@
-"""Guided sampling helpers for the FiLM-conditioned chunk diffuser.
-
-Important attributes of this re-implementation:
-
-1. FiLM conditioning, not in-painting:
-   `cond` is passed into `model.p_mean_variance(...)` on every reverse step.
-   This sampler does not re-apply `apply_conditioning(...)`-style hard
-   overwrites to the sampled chunk. That is correct for the current FiLM
-   contract, but it is not equivalent to upstream SOPE's in-painting regime.
-   If parts of the trajectory tensor must remain exact after each reverse step,
-   add an explicit projection step outside this helper.
-
-Important checks before trusting guided samples from this module:
-
-1. Policy-score space must match chunk space:
-   guidance is computed after `model_mean` is unnormalized and before the result
-   is renormalized for the DDPM update. The policy adapter must therefore expect
-   the same state and action representation produced by `unnormalizer(...)`.
-   For the current robomimic adapter, the main thing to verify is the action
-   space: robomimic diffusion policies are trained on normalized actions, while
-   rollout files may store executed environment actions. If those differ,
-   guidance direction may still look plausible while its scale is wrong.
-
-2. Robomimic score timestep is still approximate:
-   `DiffusionPolicy.grad_log_prob(...)` currently uses a fixed
-   `DiffusionPolicyScoreConfig.score_timestep` instead of the active chunk
-   sampler timestep `t`. This keeps the interface simple, but the resulting
-   score is only an approximation to the desired diffusion-time-conditioned
-   policy score.
-
-3. Chunk-level score contract is still heuristic for robomimic policies:
-   `prepare_guidance(...)` now passes the full sampled chunk to
-   `policy.grad_log_prob(state, action)` as `[B, H, *]` tensors. The current
-   robomimic adapter still reduces that chunk to per-step surrogate queries
-   internally before reshaping back to `[B, H, Da]`, so guidance remains an
-   approximation rather than the exact score of a joint action-chunk density.
-
-"""
+"""Guided sampling helpers for the FiLM-conditioned chunk diffuser. """
 
 from __future__ import annotations
 
@@ -87,6 +50,9 @@ class ScorePolicy(Protocol):
         self,
         state: torch.Tensor,
         action: torch.Tensor,
+        *,
+        prefix_states: Optional[torch.Tensor] = None,
+        prefix_actions: Optional[torch.Tensor] = None,
     ) -> torch.Tensor: ...
 
 
@@ -156,7 +122,7 @@ def _requires_action_score_interface(
 ) -> ScorePolicy:
     assert policy is not None, f"{role} requires a policy."
     grad_log_prob = getattr(policy, "grad_log_prob", None)
-    assert callable(grad_log_prob), f"{role} must expose grad_log_prob(state, action)"
+    assert callable(grad_log_prob), f"{role} must expose grad_log_prob(state, action, ...)"
     return policy
 
 
@@ -190,6 +156,8 @@ def prepare_guidance(
     options: GuidanceOptions,
     policy: Optional[Any],
     behavior_policy: Optional[Any],
+    prefix_states: Optional[torch.Tensor] = None,
+    prefix_actions: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Build an action-only guide, then pad zeros on state channels to match `model_mean`."""
     states = model_mean[..., :state_dim]
@@ -197,7 +165,12 @@ def prepare_guidance(
 
     def compute_action_score(policy: Optional[Any], *, role: str) -> torch.Tensor:
         policy = _requires_action_score_interface(policy, role=role)
-        score = policy.grad_log_prob(states, actions)
+        score = policy.grad_log_prob(
+            states,
+            actions,
+            prefix_states=prefix_states,
+            prefix_actions=prefix_actions,
+        )
         assert score.shape == actions.shape, (
             f"{role} must return shape {tuple(actions.shape)} from grad_log_prob, "
             f"got {tuple(score.shape)}."
@@ -266,6 +239,8 @@ def guided_sample_step(
     unnormalizer: Optional[Any] = None,
     normalizer: Optional[Any] = None,
     cond: Optional[torch.Tensor] = None,
+    prefix_states: Optional[torch.Tensor] = None,
+    prefix_actions: Optional[torch.Tensor] = None,
     return_info: bool = False,
 ) -> tuple[torch.Tensor, SampleInfo]:
     """Apply SOPE-style guidance to the reverse-step Gaussian returned by `model`.
@@ -310,6 +285,8 @@ def guided_sample_step(
             options=options,
             policy=policy,
             behavior_policy=behavior_policy,
+            prefix_states=prefix_states,
+            prefix_actions=prefix_actions,
         )
 
         model_mean = model_mean + guide

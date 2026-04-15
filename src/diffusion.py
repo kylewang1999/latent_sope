@@ -664,8 +664,7 @@ class SopeDiffuser:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Autoregressively generate a full unnormalized state-action trajectory.
 
-        Normalization contract:
-
+        NOTE:
         1. `initial_states` are expected in the same unnormalized state space used by
            the dataset / rollout latents.
         2. To build the first FiLM condition, the code concatenates each initial state
@@ -680,6 +679,11 @@ class SopeDiffuser:
         5. Autoregressive reconditioning uses the normalized state slice from
            `sample.trajectories[:, -frame_stack:, :state_dim]` directly. It does not
            renormalize states from the unnormalized rollout buffers.
+        6. Guidance prefixes are passed as strict-past windows of length
+           `frame_stack`. The robomimic score adapter consumes `prefix_states`
+           directly as `[s_{t-To}, ..., s_{t-1}]`, while `prefix_actions` uses
+           the same strict-past contract except for the explicit rollout-start
+           empty-prefix boundary case handled inside `policy.py`.
 
         When `normalization_stats` is `None`, `self.normalizer` and
         `self.unnormalizer` are identity maps, so the same logic still applies with
@@ -715,6 +719,24 @@ class SopeDiffuser:
         initial_transition = torch.cat([initial_states, dummy_actions], dim=-1)
         initial_state_norm = self.normalizer(initial_transition)[:, : self.state_dim]
         cond_states = initial_state_norm.unsqueeze(1).expand(-1, frame_stack, -1).clone()
+        # The robomimic score adapter consumes this as the strict-past state
+        # prefix `[s_{t-To}, ..., s_{t-1}]`.
+        prefix_states = initial_states.unsqueeze(1).expand(-1, frame_stack, -1).clone()
+        # The first chunk has no real past actions yet, so the exact scorer owns
+        # the only remaining start-boundary padding special case.
+        prefix_actions = initial_states.new_empty((batch_size, 0, self.action_dim))
+
+        def roll_prefix_buffer(
+            buffer: Optional[torch.Tensor],
+            new_steps: torch.Tensor,
+            *,
+            window: int,
+        ) -> torch.Tensor:
+            if buffer is None:
+                combined = new_steps
+            else:
+                combined = torch.cat([buffer, new_steps], dim=1)
+            return combined[:, -window:, :].clone()
 
         total_generated = 0
         self.diffusion.eval()
@@ -722,12 +744,15 @@ class SopeDiffuser:
             while total_generated < max_length:
                 steps_to_add = min(chunk_horizon, max_length - total_generated)
                 cond = cond_states.reshape(batch_size, -1)
+                guidance_kwargs = dict(guidance_kw)
+                guidance_kwargs["prefix_states"] = prefix_states
+                guidance_kwargs["prefix_actions"] = prefix_actions
                 sample = self.diffusion.conditional_sample(
                     shape=(batch_size, total_horizon, self.transition_dim),
                     cond=cond,
                     guided=guided,
                     verbose=verbose,
-                    **guidance_kw,
+                    **guidance_kwargs,
                 )
                 chunk = self.unnormalizer(sample.trajectories)
                 gen_states = chunk[:, :, : self.state_dim]
@@ -745,8 +770,25 @@ class SopeDiffuser:
                 if total_generated >= max_length:
                     break
 
-                # Recondition the next chunk on the last generated normalized states.
-                cond_states = sample.trajectories[:, -frame_stack:, : self.state_dim].clone()
+                # Chunk diffusion re-conditioning
+                cond_states = roll_prefix_buffer(
+                    cond_states,
+                    sample.trajectories[:, :steps_to_add, : self.state_dim],
+                    window=frame_stack,
+                )
+                
+                # Policy score re-conditioning keeps a strict-past window of
+                # length `frame_stack` for the off-by-one robomimic adapter.
+                prefix_states = roll_prefix_buffer(
+                    prefix_states,
+                    gen_states[:, :steps_to_add, :],
+                    window=frame_stack,
+                )
+                prefix_actions = roll_prefix_buffer(
+                    prefix_actions,
+                    gen_actions[:, :steps_to_add, :],
+                    window=frame_stack,
+                )
 
         return all_states, all_actions
 
@@ -833,6 +875,7 @@ class SopeDiffuser:
         )
         trajectory_returns = torch.sum(reward_preds_t * discounts.unsqueeze(0), dim=1)
         return float(trajectory_returns.mean().item())
+
 
 def cross_validate_configs(cfg_dataset: Any, cfg_diffusion: SopeDiffusionConfig) -> None:
     """Validate that dataset and diffusion configs agree on dimensions and conditioning."""
