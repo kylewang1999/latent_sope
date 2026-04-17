@@ -12,6 +12,8 @@ scripts/*
 !scripts/train_sope_gym.py
 !scripts/test_ope_guided.py
 !scripts/inspect_sope_gym_pdataset.ipynb
+!scripts/download_robomimic_data.py
+!scripts/train_robomimic_diffusion_policy.py
 logs*/
 *datasets/
 wandb/

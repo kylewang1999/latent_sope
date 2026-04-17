@@ -4,24 +4,39 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Set
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Set
 from copy import deepcopy
 from collections import OrderedDict
 import h5py
+import json
 
 import torch
 import numpy as np
 
-from src.robomimic_interface.encoders import resolve_module
+from third_party.robomimic.robomimic.utils import tensor_utils as TensorUtils
+from third_party.robomimic.robomimic.algo import RolloutPolicy, PolicyAlgo
+from third_party.robomimic.robomimic.envs.env_base import EnvBase
+
 from src.utils import timeit
 
-if TYPE_CHECKING:
-    from robomimic.algo import RolloutPolicy, PolicyAlgo
-    from robomimic.envs.env_base import EnvBase
-else:
-    RolloutPolicy = Any
-    PolicyAlgo = Any
-    EnvBase = Any
+
+def resolve_module(root: Any, dotted_path: str) -> Any:
+    """Resolve a dotted attribute / dict path inside a robomimic object tree."""
+    cur = root
+    for tok in dotted_path.split("."):
+        if isinstance(cur, dict):
+            cur = cur[tok]
+        else:
+            # torch.nn.ModuleDict behaves like a dict for __getitem__.
+            if hasattr(cur, "__getitem__") and not hasattr(cur, tok):
+                try:
+                    cur = cur[tok]
+                    continue
+                except Exception:
+                    pass
+            cur = getattr(cur, tok)
+    return cur
+
 
 @dataclass
 class RolloutStats:
@@ -43,13 +58,20 @@ class RolloutLatentTrajectory:
     next_obs: Optional[Dict[str, np.ndarray]] = None
     infos: Optional[List[Dict[str, Any]]] = None
     stats: Optional[RolloutStats] = None
+    feature_type: Optional[str] = None
+    feature_keys: Optional[List[str]] = None
 
 
 class PolicyFeatureHook:
-    """Attach a forward hook to a policy module and cache the latest features.
-    Warning: This is only tested with the `low_dim_concat` regime.
-    - Docs on PyTorch nn module forward_hook: https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.module.register_module_forward_hook.html
+    """Extract per-step rollout features from a robomimic policy.
+
+    Supported feature modes:
+    - ``low_dim_concat``: current-frame prepared low-dimensional observations.
+    - ``image_embedding``: current-frame RGB VisualCore embeddings for all RGB keys.
+    - ``both``: current-frame full observation-encoder output consumed by the policy.
     """
+
+    VALID_FEAT_TYPES = {"low_dim_concat", "image_embedding", "both"}
 
     def __init__(
         self,
@@ -57,33 +79,68 @@ class PolicyFeatureHook:
         obs_keys: Optional[Sequence[str]] = None,
         feat_type: str = "low_dim_concat",
     ):
-        assert feat_type in {"low_dim_concat", "high_dim_encode"}, f"Unknown feat_type: {feat_type}"
+        feat_type = str(feat_type).lower()
+        assert feat_type in self.VALID_FEAT_TYPES, f"Unknown feat_type: {feat_type}"
         self.policy = policy
         self.frame_stack = get_policy_frame_stack(policy)
-        self.obs_keys = sorted(
-            list(_get_nested_attr(policy, "policy.obs_config.modalities.obs.low_dim"))
-            if obs_keys is None
-            else list(obs_keys)
-        )
-
-        self.feat_type = str(feat_type).lower()
-
-        def _hook(_module, _inp, out):
-            if torch.is_tensor(out):
-                feat = out.detach()
-            elif isinstance(out, (list, tuple)) and out and torch.is_tensor(out[0]):
-                feat = out[0].detach()
-            else:
-                feat = out
-            self._last_feature = feat
-
+        self.feat_type = feat_type
+        self.low_dim_keys = list(obs_keys) if obs_keys is not None else self._resolve_obs_modality_keys("low_dim")
+        self.rgb_keys = self._resolve_obs_modality_keys("rgb")
+        # Raw rollout obs storage remains compact by default, independent of feature mode.
+        self.obs_keys = list(self.low_dim_keys)
         self._last_feature = None
         self._policy_module = self._resolve_policy_module()
-        self._hook_handle = self._policy_module.register_forward_hook(_hook)
+        self._obs_encoder = self._resolve_obs_encoder()
+        self._hook_handle = None
+
+        if self.feat_type == "low_dim_concat" and not self.low_dim_keys:
+            raise ValueError("feat_type='low_dim_concat' requires low-dimensional observation keys.")
+        if self.feat_type == "image_embedding" and not self.rgb_keys:
+            raise ValueError("feat_type='image_embedding' requires RGB observation keys.")
+
+    @property
+    def feature_type(self) -> str:
+        return self.feat_type
+
+    @property
+    def feature_keys(self) -> List[str]:
+        if self.feat_type == "low_dim_concat":
+            return list(self.low_dim_keys)
+        if self.feat_type == "image_embedding":
+            return list(self.rgb_keys)
+        obs_shapes = getattr(self._obs_encoder, "obs_shapes", None)
+        if obs_shapes is not None:
+            return list(obs_shapes.keys())
+        return list(self.low_dim_keys) + list(self.rgb_keys)
+
+    def _resolve_obs_modality_keys(self, modality: str) -> List[str]:
+        candidates = [
+            f"policy.obs_config.modalities.obs.{modality}",
+            f"obs_config.modalities.obs.{modality}",
+            f"policy.global_config.observation.modalities.obs.{modality}",
+            f"global_config.observation.modalities.obs.{modality}",
+        ]
+        for path in candidates:
+            keys = _get_nested_attr(self.policy, path)
+            if keys is not None:
+                return list(keys)
+        return []
 
     def _resolve_policy_module(self) -> Any:
+        algo = self._get_policy_algo()
+        ema = getattr(algo, "ema", None)
+        averaged_model = getattr(ema, "averaged_model", None)
+        if averaged_model is not None:
+            try:
+                mod = resolve_module(averaged_model, "policy.obs_encoder")
+                if callable(mod):
+                    return mod
+            except Exception:
+                pass
+
         candidates = [
-            "policy.nets.policy.obs_encoder", # for low_dim diffusion polciy
+            "policy.nets.policy.obs_encoder",
+            "nets.policy.obs_encoder",
             "nets.policy",
             "policy",
         ]
@@ -99,8 +156,33 @@ class PolicyFeatureHook:
             return self.policy
 
         raise ValueError(
-            "Could not resolve a torch policy module for low_dim_concat. "
+            "Could not resolve a torch policy observation encoder. "
             "Pass a policy with nets['policy'] or a policy module that supports hooks."
+        )
+
+    def _resolve_obs_encoder(self) -> Any:
+        try:
+            obs_encoder = resolve_module(self._policy_module, "nets.obs")
+            if self._is_observation_encoder(obs_encoder):
+                return obs_encoder
+        except Exception:
+            pass
+        if self._is_observation_encoder(self._policy_module):
+            return self._policy_module
+        for _name, module in getattr(self._policy_module, "named_modules", lambda: [])():
+            if self._is_observation_encoder(module):
+                return module
+        raise RuntimeError(
+            "Could not resolve the per-observation-group encoder from the policy "
+            "obs_encoder. Expected a module with obs_shapes, obs_nets, and "
+            "obs_randomizers."
+        )
+
+    @staticmethod
+    def _is_observation_encoder(module: Any) -> bool:
+        return all(
+            hasattr(module, attr)
+            for attr in ("obs_shapes", "obs_nets", "obs_randomizers")
         )
 
     def _get_policy_algo(self) -> PolicyAlgo:
@@ -113,44 +195,118 @@ class PolicyFeatureHook:
             return obs_shapes
         raise RuntimeError("Policy does not expose obs_shapes needed to encode observations.")
 
+    def _prepare_obs_inputs(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        prep: RolloutPolicy = self.policy if hasattr(self.policy, "_prepare_observation") else getattr(self.policy, "policy", None)
+        assert prep is not None and hasattr(prep, "_prepare_observation"), (
+            "Policy does not expose _prepare_observation needed to encode observations."
+        )
+
+        obs_t = prep._prepare_observation(obs, batched_ob=False)
+        inputs = {"obs": obs_t}
+        if goal is not None:
+            inputs["goal"] = prep._prepare_observation(goal, batched_ob=False)
+
+        obs_shapes = self._get_obs_shapes()
+        for k in obs_shapes:
+            if inputs["obs"][k].ndim - 1 == len(obs_shapes[k]):
+                inputs["obs"][k] = inputs["obs"][k].unsqueeze(1)
+        return inputs
+
+    @staticmethod
+    def _current_frame(x: torch.Tensor, obs_shape: Sequence[int]) -> torch.Tensor:
+        if x.ndim - 2 == len(obs_shape):
+            return x[:, -1]
+        if x.ndim - 1 == len(obs_shape):
+            return x
+        raise ValueError(
+            f"Observation tensor shape {tuple(x.shape)} does not match expected "
+            f"obs shape {tuple(obs_shape)} with or without a time dimension."
+        )
+
+    @staticmethod
+    def _flatten_feature(x: torch.Tensor) -> torch.Tensor:
+        return TensorUtils.flatten(x, begin_axis=1)
+
+    @staticmethod
+    def _squeeze_single_batch(x: torch.Tensor) -> torch.Tensor:
+        assert x.ndim >= 2, f"Expected batched feature tensor, got shape {tuple(x.shape)}."
+        assert x.shape[0] == 1, (
+            "Rollout feature extraction expects one environment observation at a time; "
+            f"got batch size {x.shape[0]}."
+        )
+        return x[0].detach()
+
+    def _extract_low_dim_feature(self, obs_t: Dict[str, torch.Tensor]) -> torch.Tensor:
+        obs_shapes = self._get_obs_shapes()
+        parts = []
+        for key in self.low_dim_keys:
+            if key not in obs_t:
+                raise KeyError(f"Prepared observation is missing low-dimensional key {key!r}.")
+            current = self._current_frame(obs_t[key], obs_shapes[key])
+            parts.append(self._flatten_feature(current))
+        return torch.cat(parts, dim=-1)
+
+    def _extract_image_feature(self, obs_t: Dict[str, torch.Tensor]) -> torch.Tensor:
+        obs_shapes = self._get_obs_shapes()
+        feats = []
+        for key in self.rgb_keys:
+            if key not in obs_t:
+                raise KeyError(f"Prepared observation is missing RGB key {key!r}.")
+            x = self._current_frame(obs_t[key], obs_shapes[key])
+            for randomizer in self._obs_randomizers_for_key(key):
+                if randomizer is not None:
+                    x = randomizer.forward_in(x)
+            visual_net = self._obs_net_for_key(key)
+            if visual_net is None:
+                raise RuntimeError(f"RGB key {key!r} does not have an observation network.")
+            x = visual_net(x)
+            activation = getattr(self._obs_encoder, "activation", None)
+            if activation is not None:
+                x = activation(x)
+            for randomizer in reversed(self._obs_randomizers_for_key(key)):
+                if randomizer is not None:
+                    x = randomizer.forward_out(x)
+            feats.append(self._flatten_feature(x))
+        return torch.cat(feats, dim=-1)
+
+    def _obs_net_for_key(self, key: str) -> Any:
+        obs_nets = getattr(self._obs_encoder, "obs_nets")
+        if hasattr(obs_nets, "__getitem__"):
+            return obs_nets[key]
+        return getattr(obs_nets, key)
+
+    def _obs_randomizers_for_key(self, key: str) -> List[Any]:
+        obs_randomizers = getattr(self._obs_encoder, "obs_randomizers")
+        randomizers = obs_randomizers[key] if hasattr(obs_randomizers, "__getitem__") else getattr(obs_randomizers, key)
+        return list(randomizers)
+
+    def _extract_full_obs_encoder_feature(self, inputs: Dict[str, Any]) -> torch.Tensor:
+        # time_distributed mirrors robomimic's diffusion-policy path:
+        # [B, T, ...] -> [B * T, ...] -> obs_encoder -> [B, T, Dobs].
+        obs_features = TensorUtils.time_distributed(
+            inputs,
+            self._policy_module,
+            inputs_as_kwargs=True,
+        )
+        if obs_features.ndim == 3:
+            return obs_features[:, -1, :]
+        if obs_features.ndim == 2:
+            return obs_features
+        raise ValueError(f"Unexpected obs_encoder output shape: {tuple(obs_features.shape)}.")
+
     def update_latent_from_obs(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
-        """Invoke the hook with policy-formatted inputs to refresh cached features.
-
-        This is needed because the policy's action buffer and horizon settings can result in
-        the policy's forward pass (which invokes the registered forward hook) to run every 
-        `action_horizon` (configured through robomimic's config by `algo.horizon.action_horizon`)
-        and therefore skipping the hook update. As a remedy we force the hook update here
-        through @update_latent_from_obs by running the policy's pass forcefully using 
-        @TensorUtils.time_distributed
-        """
-        from robomimic.utils import tensor_utils as TensorUtils
-        
-        def _prepare_obs_inputs(obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-            prep: RolloutPolicy = self.policy if hasattr(self.policy, "_prepare_observation") else getattr(self.policy, "policy", None)
-            assert prep is not None and hasattr(prep, "_prepare_observation"), "Policy does not expose _prepare_observation needed to encode observations."
-
-            # Robomimic policies maintain an internal action buffer and expect observations shaped
-            # to match the configured horizon settings (e.g., observation_horizon=2, action_horizon=8,
-            # prediction_horizon=16 for diffusion policies). We mirror that preparation here so the
-            # hook sees inputs in the exact same format the policy forward uses.
-            obs_t = prep._prepare_observation(obs, batched_ob=False)
-            inputs = {"obs": obs_t}
-            if goal is not None:
-                inputs["goal"] = prep._prepare_observation(goal, batched_ob=False)
-
-            obs_shapes = self._get_obs_shapes()
-            if obs_shapes is not None:
-                for k in obs_shapes:
-                    if inputs["obs"][k].ndim - 1 == len(obs_shapes[k]):
-                        inputs["obs"][k] = inputs["obs"][k].unsqueeze(1)
-            return inputs
-        
-        if self.feat_type != "low_dim_concat":
-            # Warning: might actually need to implement the corresponding logic for
-            # the high_dim_encode feat_type as well - need to find out
-            return
-        inputs = _prepare_obs_inputs(obs, goal=goal)
-        _ = TensorUtils.time_distributed(inputs, self._policy_module, inputs_as_kwargs=True)
+        """Refresh the cached feature for the current environment observation."""
+        inputs = self._prepare_obs_inputs(obs, goal=goal)
+        with torch.no_grad():
+            if self.feat_type == "low_dim_concat":
+                feat = self._extract_low_dim_feature(inputs["obs"])
+            elif self.feat_type == "image_embedding":
+                feat = self._extract_image_feature(inputs["obs"])
+            elif self.feat_type == "both":
+                feat = self._extract_full_obs_encoder_feature(inputs)
+            else:
+                raise AssertionError(f"Unhandled feat_type={self.feat_type!r}.")
+        self._last_feature = self._squeeze_single_batch(feat)
 
     def ensure_feature(self, obs: Dict[str, Any], goal: Optional[Dict[str, Any]] = None) -> None:
         if self._last_feature is None:
@@ -168,7 +324,8 @@ class PolicyFeatureHook:
             finally:
                 self._hook_handle = None
 
-    def __del__(self): self.close()
+    def __del__(self): 
+        self.close()
 
     def pull_feat(self, clear: bool = True) -> np.ndarray:
         """Return last captured feature as a float32 numpy array."""
@@ -205,13 +362,12 @@ class RolloutLatentRecorder:
         frame_stack: Optional[int] = None,
     ):
         self.feature_hook = feature_hook
-        self.obs_keys = None if obs_keys is None else sorted(obs_keys)
+        self.obs_keys = list(obs_keys) if obs_keys is not None else list(self.feature_hook.obs_keys)
         self.store_obs = bool(store_obs)
         self.store_next_obs = bool(store_next_obs)
         self.encoder = encoder
         self.encoder_device = encoder_device
         self.frame_stack = self.feature_hook.frame_stack
-        self.obs_keys = sorted(self.feature_hook.obs_keys)
 
         # containers to hold rollout data over T rollout timesteps
         self._obs: OrderedDict[str, List[np.ndarray]] = OrderedDict()
@@ -291,6 +447,8 @@ class RolloutLatentRecorder:
             next_obs=_stack_obs_along_time(self._next_obs) if self.store_next_obs else None,
             infos=self._infos,
             stats=stats,
+            feature_type=self.feature_hook.feature_type if self.feature_hook is not None else None,
+            feature_keys=self.feature_hook.feature_keys if self.feature_hook is not None else None,
         )
 
 
@@ -341,6 +499,8 @@ def save_rollout_latents(path: Path, traj: RolloutLatentTrajectory) -> Path:
             total_reward=np.asarray([traj.total_reward], dtype=np.float32),
             horizon=np.asarray([traj.horizon], dtype=np.int64),
             frame_stack=np.asarray([traj.frame_stack], dtype=np.int64),
+            feature_type=np.asarray([traj.feature_type or ""], dtype=np.str_),
+            feature_keys=np.asarray(traj.feature_keys or [], dtype=np.str_),
         )
         return path
 
@@ -355,6 +515,10 @@ def save_rollout_latents(path: Path, traj: RolloutLatentTrajectory) -> Path:
         f.attrs["total_reward"] = float(traj.total_reward)
         f.attrs["horizon"] = int(traj.horizon)
         f.attrs["frame_stack"] = int(traj.frame_stack)
+        if traj.feature_type is not None:
+            f.attrs["feature_type"] = str(traj.feature_type)
+        if traj.feature_keys is not None:
+            f.attrs["feature_keys"] = json.dumps(list(traj.feature_keys))
 
         if traj.obs is not None:
             obs_group = f.create_group("obs")
@@ -385,6 +549,10 @@ def load_rollout_latents(path: Path) -> RolloutLatentTrajectory:
         success = bool(np.asarray(data["success"])[0]) if "success" in data else False
         total_reward = float(np.asarray(data["total_reward"])[0]) if "total_reward" in data else float(rewards.sum())
         horizon = int(np.asarray(data["horizon"])[0]) if "horizon" in data else int(rewards.shape[0])
+        feature_type = str(np.asarray(data["feature_type"])[0]) if "feature_type" in data else None
+        if feature_type == "":
+            feature_type = None
+        feature_keys = [str(k) for k in np.asarray(data["feature_keys"]).tolist()] if "feature_keys" in data else None
         return RolloutLatentTrajectory(
             latents=latents,
             actions=actions,
@@ -398,6 +566,8 @@ def load_rollout_latents(path: Path) -> RolloutLatentTrajectory:
             next_obs=None,
             infos=None,
             stats=None,
+            feature_type=feature_type,
+            feature_keys=feature_keys,
         )
 
     else:
@@ -418,6 +588,14 @@ def load_rollout_latents(path: Path) -> RolloutLatentTrajectory:
             next_obs = None
             if "next_obs" in f:
                 next_obs = OrderedDict((k, np.asarray(v)) for k, v in f["next_obs"].items())
+            feature_type = f.attrs.get("feature_type", None)
+            feature_keys_raw = f.attrs.get("feature_keys", None)
+            feature_keys = None
+            if feature_keys_raw is not None:
+                try:
+                    feature_keys = list(json.loads(feature_keys_raw))
+                except Exception:
+                    feature_keys = [str(feature_keys_raw)]
 
         return RolloutLatentTrajectory(
             latents=latents,
@@ -432,6 +610,8 @@ def load_rollout_latents(path: Path) -> RolloutLatentTrajectory:
             next_obs=next_obs,
             infos=None,
             stats=None,
+            feature_type=None if feature_type is None else str(feature_type),
+            feature_keys=feature_keys,
         )
 
 

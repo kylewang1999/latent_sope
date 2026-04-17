@@ -216,6 +216,24 @@ def _load_config_json(run_dir: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _resolve_checkpoint_path(run_dir: Path, ckpt_path: Optional[Path]) -> Path:
+    """Resolve a checkpoint path from absolute, cwd-relative, or run-dir-relative input."""
+    if ckpt_path is None:
+        return _find_latest_checkpoint(run_dir)
+
+    ckpt_path = Path(ckpt_path)
+    if ckpt_path.is_absolute():
+        return ckpt_path
+    if ckpt_path.is_file():
+        return ckpt_path.resolve()
+
+    run_dir_relative = run_dir / ckpt_path
+    if run_dir_relative.is_file():
+        return run_dir_relative
+
+    return run_dir_relative
+
+
 def _convert_normalization_stats(
     stats: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
@@ -269,7 +287,9 @@ def load_checkpoint(
 
     Args:
         run_dir: robomimic run directory (contains config.json, models/)
-        ckpt_path: optional explicit checkpoint path relative to run_dir. If None, auto-select.
+        ckpt_path: optional explicit checkpoint path. Absolute paths, paths
+            relative to the current working directory, and paths relative to
+            `run_dir` are all accepted. If None, auto-select.
         map_location: torch map_location for loading.
 
     Returns:
@@ -277,9 +297,7 @@ def load_checkpoint(
     """
 
     run_dir = Path(run_dir)
-    if ckpt_path is None:
-        ckpt_path = _find_latest_checkpoint(run_dir)
-    ckpt_path = run_dir / ckpt_path
+    ckpt_path = _resolve_checkpoint_path(run_dir, ckpt_path)
 
     ckpt_dict = _load_ckpt_dict_robomimic(ckpt_path)
     if ckpt_dict is None:

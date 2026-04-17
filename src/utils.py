@@ -37,6 +37,9 @@ class ProjectPaths:
     src_root: Path = _REPO_ROOT / "src"
     scripts_root: Path = _REPO_ROOT / "scripts"
     docs_root: Path = _REPO_ROOT / "docs"
+    data_root: Path = _REPO_ROOT / "data"
+    policy_root: Path = data_root / "policy"
+    rollout_root: Path = data_root / "rollout"
     logs_dir: Path = _REPO_ROOT / "logs"
     configs_dir: Path = _REPO_ROOT / "configs"
     third_party_root: Path = _REPO_ROOT / "third_party"
@@ -44,11 +47,21 @@ class ProjectPaths:
     safediffuser_d4rl_path: Path = safediffuser_root / "diffuser" / "datasets" / "d4rl.py"
     d4rl_root: Path = _REPO_ROOT / "third_party" / "d4rl"
     d4rl_data_dir: Path = _D4RL_DATA_DIR
+    robomimic_dataset_root: Path = Path(
+        os.environ.get("ROBOMIMIC_DATASET_DIR", "/scr/shared/datasets/robomimic0.5")
+    )
+    robomimic_lift_mh_image_v15_path: Path = robomimic_dataset_root / "lift" / "mh" / "image_v15.hdf5"
     robomimic_root: Path = _REPO_ROOT / "third_party" / "robomimic"
     robomimic_diffusion_models_root: Path = robomimic_root / "diffusion_policy_trained_models"
     default_rollout_latents_path: Path = (
         robomimic_diffusion_models_root / "test" / "20260130145148" / "rollout_latents.h5"
     )
+
+    def robomimic_policy_dir(self, policy_name: str) -> Path:
+        return self.policy_root / policy_name
+
+    def robomimic_dataset_embedding_dir(self, policy_name: str, feat_type: str) -> Path:
+        return self.rollout_root / f"{policy_name}_dataset_{feat_type}"
 
 
 PATHS = ProjectPaths()

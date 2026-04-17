@@ -9,7 +9,6 @@ import torch
 from torch.utils.data import ConcatDataset, DataLoader
 from torch.utils.data._utils.collate import default_collate
 
-from src.robomimic_interface.encoders import extract_embeddings_batched
 from src.robomimic_interface.rollout import (
     RolloutLatentTrajectory,
     load_rollout_latents,
@@ -20,6 +19,29 @@ from src.robomimic_interface.rollout import (
 class NormalizationStats:
     mean: np.ndarray  # shape (D,)
     std: np.ndarray  # shape (D,)
+
+
+def _extract_embeddings_batched(
+    encoder: Any,
+    obs_batch: Dict[str, np.ndarray],
+    *,
+    device: str = "cuda",
+) -> np.ndarray:
+    """Convert time-major observations into a `(T, D)` feature array.
+
+    This preserves the old `encoders.extract_embeddings_batched(...)` contract
+    while keeping the dataset path independent of the removed module.
+    """
+    if hasattr(encoder, "encode_obs_batch"):
+        encoded = encoder.encode_obs_batch(obs_batch, device=device)
+    elif callable(encoder):
+        encoded = encoder(obs_batch)
+    else:
+        raise TypeError(f"Unsupported encoder type: {type(encoder)}")
+
+    if hasattr(encoded, "z"):
+        encoded = encoded.z
+    return np.asarray(encoded, dtype=np.float32)
 
 
 def _summary_stats(x: np.ndarray) -> Dict[str, float]:
@@ -268,7 +290,11 @@ class RolloutChunkDataset:
         obs = self.traj.obs
         if self.obs_keys is not None:
             obs = {k: obs[k] for k in self.obs_keys}
-        z = extract_embeddings_batched(self.encoder, obs, device=self.encoder_device)
+        z = _extract_embeddings_batched(
+            self.encoder,
+            obs,
+            device=self.encoder_device,
+        )
         if self.config.state_projection == "eef_pos":
             raise ValueError(
                 "state_projection='eef_pos' is only supported for source='latents'."
