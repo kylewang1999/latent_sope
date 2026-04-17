@@ -1,5 +1,33 @@
 #!/usr/bin/env python3
-"""Train and flatten the Lift MH robomimic diffusion-policy artifacts."""
+"""Train and flatten the Lift MH robomimic diffusion-policy artifacts.
+
+This script launches robomimic diffusion-policy training for the Lift MH task,
+then flattens the raw robomimic run directory into a single output directory
+with selected checkpoints and rollout summaries.
+
+Example commands:
+
+1. Run with defaults, which trains on
+   `data/robomimic/lift/mh/image_v15.hdf5` using config
+   `data/policy/rmimic-lift-mh-image-v15-diffusion_260123/config.json`
+   and writes a date-stamped output directory under `data/policy/`:
+
+   ```bash
+   python3 scripts/train_robomimic_diffusion_policy.py
+   ```
+
+2. Train for 100 epochs and write artifacts to a fixed output directory:
+
+   ```bash
+   python3 scripts/train_robomimic_diffusion_policy.py \
+       --dataset data/robomimic/lift/mh/image_v15.hdf5 \
+       --config data/policy/rmimic-lift-mh-image-v15-diffusion_260123/config.json \
+       --epochs 100 \
+       --device cuda:0 \
+       --output-dir data/policy/rmimic-lift-mh-image-v15-diffusion_custom \
+       --overwrite
+   ```
+"""
 
 from __future__ import annotations
 
@@ -25,7 +53,7 @@ for candidate in (REPO_ROOT, ROBOMIMIC_ROOT):
 
 DEFAULT_DATASET_PATH = REPO_ROOT / "data" / "robomimic" / "lift" / "mh" / "image_v15.hdf5"
 DEFAULT_CONFIG_PATH = (
-    REPO_ROOT / "data" / "policy" / "rmimic-lift-mh-image-v15_diffusion_260123" / "config.json"
+    REPO_ROOT / "data" / "policy" / "rmimic-lift-mh-image-v15-diffusion_260123" / "config.json"
 )
 DEFAULT_OUTPUT_STEM = "rmimic-lift-mh-image-v15-diffusion"
 TARGET_POLICY_EPOCHS = (40, 60, 80, 100, 200, 300)

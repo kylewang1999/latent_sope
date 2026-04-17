@@ -464,7 +464,7 @@ class FilmGaussianDiffusion(GaussianDiffusion):
 class SopeDiffusionConfig:
     """Configuration for the canonical SOPE chunk diffusion model."""
 
-    chunk_horizon: int = 8
+    chunk_horizon: int = 14
     trajectory_horizon: int = 60
     ope_gamma: float = 0.99
     frame_stack: int = 2

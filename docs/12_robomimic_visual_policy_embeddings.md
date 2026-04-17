@@ -6,7 +6,7 @@ diffusion-policy U-Net.
 
 Relevant code and artifacts:
 
-- [data/policy/rmimic-lift-mh-image-v15_diffusion_260123/config.json](../data/policy/rmimic-lift-mh-image-v15_diffusion_260123/config.json)
+- [data/policy/rmimic-lift-mh-image-v15-diffusion_260123/config.json](../data/policy/rmimic-lift-mh-image-v15-diffusion_260123/config.json)
 - [third_party/robomimic/robomimic/algo/diffusion_policy.py](../third_party/robomimic/robomimic/algo/diffusion_policy.py)
 - [third_party/robomimic/robomimic/utils/file_utils.py](../third_party/robomimic/robomimic/utils/file_utils.py)
 - [third_party/robomimic/robomimic/utils/train_utils.py](../third_party/robomimic/robomimic/utils/train_utils.py)
@@ -24,7 +24,7 @@ Relevant code and artifacts:
 ## 1. Summary
 
 The policy at
-`data/policy/rmimic-lift-mh-image-v15_diffusion_260123/config.json` encodes
+`data/policy/rmimic-lift-mh-image-v15-diffusion_260123/config.json` encodes
 both configured camera streams and concatenates their features with the
 configured low-dimensional observations into one per-timestep observation
 feature.
@@ -358,7 +358,7 @@ The default invocation is:
 
 ```bash
 python3 -m src.robomimic_interface.post_process_robomimic_h5 \
-  --policy-name rmimic-lift-mh-image-v15_diffusion_260123 \
+  --policy-name rmimic-lift-mh-image-v15-diffusion_260123 \
   --checkpoint-name models/model_epoch_300.pth
 ```
 
@@ -368,6 +368,12 @@ The converter supports the same feature modes as rollout collection:
   accepts `low_dim` as a backward-compatible alias for this mode.
 - `image_embedding`: current-frame embeddings for all configured RGB cameras.
 - `both`: current-frame full `obs_encoder` output.
+
+For the local Lift MH image checkpoint, running the converter with
+`feat_type="both"` and the default output-path inference writes these
+one-step observation features under:
+
+`data/robomimic/lift/mh/postprocessed_for_ope/both`
 
 Frame-stack windows are built with robomimic `SequenceDataset` padding
 semantics. The saved latent remains one current-frame feature per dataset step:

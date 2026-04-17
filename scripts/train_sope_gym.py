@@ -1,4 +1,34 @@
 #!/usr/bin/env python3
+"""Train the SOPE chunk diffusion model on a SOPE Gym dataset export.
+
+This script loads a SOPE Gym dataset bundle, builds train and eval chunk
+datasets, and trains the SOPE diffusion model with configurable chunking,
+normalization, and logging settings. The default no-arg path uses
+`chunk_size=14` so the bundled robomimic defaults `To=2` and `Tp=16` satisfy
+`Tp = To + H`, enabling exact whole-action-chunk scoring by default.
+
+Example commands:
+
+1. Run with defaults, which trains on `data/sope_gym_data/IAcrobat` and writes
+   checkpoints to a fresh `logs/train_sope_gym_*` directory:
+
+   ```bash
+   python3 scripts/train_sope_gym.py
+   ```
+
+2. Train with custom chunking, diffusion steps, and offline W&B logging:
+
+   ```bash
+   python3 scripts/train_sope_gym.py \
+       --data data/sope_gym_data/IAcrobat \
+       --epochs 200 \
+       --chunk-size 8 \
+       --frame-stack 4 \
+       --diffusion-steps 512 \
+       --normalization-source computed \
+       --wandb-mode offline
+   ```
+"""
 
 from __future__ import annotations
 
@@ -23,6 +53,13 @@ from src.train import TrainingConfig, _assign_dataset_stats, train_sope
 from src.utils import PATHS, make_log_dir
 
 
+DEFAULT_MATCHED_OBSERVATION_HORIZON = 2
+DEFAULT_MATCHED_PREDICTION_HORIZON = 16
+DEFAULT_CHUNK_SIZE = (
+    DEFAULT_MATCHED_PREDICTION_HORIZON - DEFAULT_MATCHED_OBSERVATION_HORIZON
+)
+
+
 def _resolve_default_checkpoint_dir() -> Path:
     return Path(make_log_dir("train_sope_gym", verbose=False))
 
@@ -33,7 +70,7 @@ def _resolve_default_data_path() -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train the SOPE chunk diffusion model on a SOPE Gym pdataset export."
+        description="Train the SOPE chunk diffusion model on a SOPE Gym dataset export."
     )
     parser.add_argument("--data", type=Path, default=_resolve_default_data_path())
     parser.add_argument("--checkpoint-dir", type=Path, default=None)
@@ -46,7 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-scheduler-min-lr", type=float, default=0.0)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--chunk-size", type=int, default=4)
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_CHUNK_SIZE,
+        help=(
+            "Future chunk horizon H. Defaults to 14 so the bundled robomimic "
+            "defaults To=2 and Tp=16 satisfy Tp = To + H."
+        ),
+    )
     parser.add_argument("--frame-stack", type=int, default=2)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument(

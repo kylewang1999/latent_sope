@@ -1,21 +1,24 @@
-# Autoregressive Trajectory Generation, OPE, And Rollout Reporting
+# Autoregressive Trajectory Generation, Guided OPE, And Rollout Reporting
 
 Relevant code:
 
 - [scripts/test_ope.py](../scripts/test_ope.py)
+- [scripts/test_ope_guided.py](../scripts/test_ope_guided.py)
 - [src/diffusion.py](../src/diffusion.py)
 - [src/eval.py](../src/eval.py)
+- [src/robomimic_interface/checkpoints.py](../src/robomimic_interface/checkpoints.py)
 - [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py)
 - [src/robomimic_interface/rollout.py](../src/robomimic_interface/rollout.py)
 - [third_party/sope/opelab/core/baselines/diffuser.py](../third_party/sope/opelab/core/baselines/diffuser.py)
 
 ## 1. Summary
 
-The local `SopeDiffuser` owns three closely related rollout-time behaviors:
+The local rollout evaluation stack owns four closely related behaviors:
 
 1. autoregressive full-trajectory generation
-2. discounted OPE return estimation with a learned reward model
-3. rollout-level reporting metrics that compare generated and held-out
+2. discounted unguided OPE return estimation with a learned reward model
+3. guided trajectory-level OPE using robomimic target and behavior policies
+4. rollout-level reporting metrics that compare generated and held-out
    trajectories
 
 These belong in one note because they share the same rollout horizon,
@@ -115,7 +118,78 @@ a_{i,t}
 where $T$ is the shared evaluated horizon and $D$ is the full transition
 dimension.
 
-## 5. Normalization Contract
+## 5. Guided Trajectory OPE Script
+
+[`scripts/test_ope_guided.py`](../scripts/test_ope_guided.py) is the guided
+trajectory-level OPE entrypoint. It mirrors the rollout selection, reward
+aggregation, and JSON reporting structure of
+[`scripts/test_ope.py`](../scripts/test_ope.py), but it attaches robomimic
+diffusion policies for target and behavior guidance before autoregressive
+trajectory generation.
+
+The script preserves the main checkpoint, data, split, device, and batching
+arguments from [`scripts/test_ope.py`](../scripts/test_ope.py), and adds:
+
+- `--target-policy-checkpoint`
+- `--behavior-policy-checkpoint`
+- `--action-score-scale`
+- `--num-guidance-iters`
+- `--action-score-postprocess`
+- `--action-neg-score-weight`
+- `--clamp-linf`
+- `--target-score-timestep`
+- `--behavior-score-timestep`
+- `--use-adaptive` / `--no-use-adaptive`
+- `--use-neg-grad` / `--no-use-neg-grad`
+
+The default target and behavior checkpoints are:
+
+- `data/policy/rmimic-lift-ph-lowdim_diffusion_260130/models/model_epoch_50_low_dim_v15_success_0.92.pth`
+- `data/policy/rmimic-lift-ph-lowdim_diffusion_260130/last.pth`
+
+The guided script accepts full checkpoint file paths directly. Each checkpoint
+path is resolved by walking upward to the nearest ancestor containing
+`config.json`, treating that directory as the robomimic run root, and then
+passing the checkpoint path relative to that run root into the existing
+checkpoint helpers.
+
+[`build_algo_from_checkpoint`](../src/robomimic_interface/checkpoints.py) also
+initializes both robomimic obs-utils module namespaces before constructing the
+policy network:
+
+- `robomimic.utils.obs_utils`
+- `third_party.robomimic.robomimic.utils.obs_utils`
+
+This avoids a duplicated-module failure mode where the canonical robomimic
+network builder reads modality globals from `robomimic.utils.obs_utils` while
+the local helper had only initialized the vendored namespace.
+
+The JSON report preserves the core OPE fields from
+[`scripts/test_ope.py`](../scripts/test_ope.py) and adds:
+
+- `guided: true`
+- target and behavior policy checkpoint paths
+- target and behavior score timesteps
+- nested `guidance_config`
+
+The guided script writes to a separate default report file
+`<diffusion-checkpoint-stem>_ope_guided_report.json`, so guided runs do not
+overwrite unguided OPE reports.
+
+The current FiLM guidance surface forwarded by the script is:
+
+- `action_score_scale`
+- `use_adaptive`
+- `use_neg_grad`
+- `action_score_postprocess`
+- `num_guidance_iters`
+- `clamp_linf`
+- `action_neg_score_weight`
+
+If `--no-use-neg-grad` is set, the script skips behavior-policy loading and
+runs target-only guidance.
+
+## 6. Normalization Contract
 
 The public rollout interface stays in unnormalized state/action space, but
 sampling and autoregressive reconditioning still happen in normalized
@@ -129,12 +203,12 @@ That means:
 - the next autoregressive prefix is built from the normalized generated state
   suffix, not from the denormalized output arrays
 
-## 6. Validation
+## 7. Validation
 
 The lightweight validation for this codepath is:
 
 ```bash
-source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/diffusion.py src/eval.py scripts/test_ope.py src/robomimic_interface/dataset.py src/robomimic_interface/rollout.py
+source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && python -m py_compile src/diffusion.py src/eval.py scripts/test_ope.py scripts/test_ope_guided.py src/robomimic_interface/checkpoints.py src/robomimic_interface/dataset.py src/robomimic_interface/rollout.py
 ```
 
 If the rollout or reward contract changes, rerun the smallest available chunk
@@ -143,3 +217,10 @@ or rollout evaluation that exercises:
 - autoregressive generation
 - transformed-return reporting
 - rollout MSE against saved rollout assets
+- one guided trajectory-OPE smoke test
+
+Guided smoke test:
+
+```bash
+source /home/kyle/miniforge3/etc/profile.d/conda.sh && conda activate latent_sope && MPLCONFIGDIR=/tmp/matplotlib python3 scripts/test_ope_guided.py --device cpu --max-trajectories 1 --rollout-batch-size 1 --json
+```

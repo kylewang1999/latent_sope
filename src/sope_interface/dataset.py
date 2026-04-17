@@ -68,7 +68,7 @@ class SopeGymEpisodeSummary:
 
 @dataclass(frozen=True)
 class SopeGymChunkDatasetConfig:
-    chunk_size: int = 8
+    chunk_size: int = 14
     stride: int = 1
     frame_stack: int = 1
     state_dim: int = 3

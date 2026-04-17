@@ -162,7 +162,7 @@ class RolloutChunkDatasetConfig:
     - normalize: apply dataset-level normalization stats
     - return_metadata: return index/demo_id/t0 metadatadata for debugging
     """
-    chunk_size: int = 8
+    chunk_size: int = 14
     stride: int = 2
     frame_stack: int = 2
     source: str = "latents"

@@ -33,7 +33,8 @@ The active training stack uses:
   as the policy-staging helper for the main robomimic checkpoint workflow
 - [scripts/create_rollout_dataset.py](../scripts/create_rollout_dataset.py)
   as the rollout-dataset generation entrypoint
-- [scripts/train_sope.py](../scripts/train_sope.py) as the rollout-backed CLI
+- [scripts/train_sope.py](../scripts/train_sope.py) as the latent-trajectory
+  training CLI, including postprocessed robomimic demos
 - [scripts/train_sope_gym.py](../scripts/train_sope_gym.py) as the SOPE Gym
   state-dataset CLI
 - [src/eval.py](../src/eval.py) as the reusable evaluation path
@@ -44,7 +45,8 @@ loader-only wrappers no longer own separate implementations.
 
 ## 2. Data And Chunking Path
 
-The rollout-backed path builds chunk datasets from saved rollout files under
+The latent-trajectory path builds chunk datasets from saved latent-trajectory
+files under
 [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py).
 The intended chunk contract is:
 
@@ -93,7 +95,7 @@ under `data/rollout/<policy-name>`.
 
 [`scripts/prepare_policy_hm-image.py`](../scripts/prepare_policy_hm-image.py)
 prepares the multi-human image diffusion policy archive under
-`data/policy/rmimic-lift-mh-image-v15_diffusion_260123`.
+`data/policy/rmimic-lift-mh-image-v15-diffusion_260123`.
 
 Its behavior is:
 

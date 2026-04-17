@@ -47,25 +47,104 @@ Use these notes as the current owners of each topic:
 
 - [docs/1_robomimic_diffusion_score_guidance.md](./1_robomimic_diffusion_score_guidance.md)
   for robomimic guidance, FiLM conditioning, parameterization caveats,
-  visual-backbone behavior, and the local adapter score-config surface
+  visual-backbone behavior, the local policy-score surface, and horizon /
+  checkpoint semantics for diffusion-policy guidance
 - [docs/2_reward_predictor.md](./2_reward_predictor.md) for reward-model
   semantics
 - [docs/3_training_pipeline.md](./3_training_pipeline.md) for training and
   evaluation entrypoints together with rollout-dataset workflows,
   environment-bootstrap behavior, chunk-contract semantics, and debug modes
 - [docs/5_autoregressive_trajectory_generation.md](./5_autoregressive_trajectory_generation.md)
-  for rollout generation, OPE returns, and rollout reporting metrics
+  for rollout generation, guided and unguided trajectory OPE, and rollout
+  reporting metrics
 - [docs/6_guided_trajectory_sampling.md](./6_guided_trajectory_sampling.md)
   for the detailed action-guidance derivation, DDPM guidance math, and
   score-contract interpretation
-- [docs/7_policy_score_interface.md](./7_policy_score_interface.md) for the
-  local policy-score interface, action-score postprocessing contract, and
-  behavior-score weighting semantics
-- [docs/12_robomimic_full_chunk_score_interface.md](./12_robomimic_full_chunk_score_interface.md)
-  for the exact robomimic chunk-score path, legacy fallback behavior, and
-  prefix-state / prefix-action guidance context
 
-## 4. Validation Priorities
+## 4. Operational Notes
+
+### 4.1 Worktree Sync Strategy
+
+This repository is a worktree family under `/home/kyle/repos/wkt_sope/`:
+
+- `main/` is the primary checkout and owns the shared Git admin directory
+- `rei/` and `celina/` are linked worktrees
+- `rei/.git` and `celina/.git` are pointer files, not standalone repositories
+
+When syncing this repo family to another server, do not `rsync` copied `.git`
+artifacts directly. The linked-worktree `.git` pointer files reference
+machine-local absolute paths under `main/.git/worktrees/...`, so copying them
+naively usually produces broken remote worktrees.
+
+### 4.2 Recommended Remote Bootstrap
+
+The safe pattern is:
+
+1. create a real Git checkout for `main/` on the remote
+2. recreate `rei/` and `celina/` there with `git worktree add`
+3. `rsync` the full worktree family while excluding every `.git` path
+
+If the remote can reach GitHub:
+
+```bash
+ssh REMOTE 'mkdir -p ~/wkt_sope'
+ssh REMOTE 'git clone https://github.com/kylewang1999/latent_sope.git ~/wkt_sope/main'
+ssh REMOTE 'cd ~/wkt_sope/main && git fetch origin main Rei Celina'
+ssh REMOTE 'cd ~/wkt_sope/main && git checkout main'
+ssh REMOTE 'cd ~/wkt_sope/main && git submodule update --init'
+ssh REMOTE 'cd ~/wkt_sope/main && git worktree add ../rei Rei'
+ssh REMOTE 'cd ~/wkt_sope/main && git worktree add ../celina Celina'
+```
+
+If the remote cannot reach GitHub, seed it from a bundle created from the local
+`main/` checkout:
+
+```bash
+git -C /home/kyle/repos/wkt_sope/main bundle create /tmp/latent_sope.bundle --all
+scp /tmp/latent_sope.bundle REMOTE:~/wkt_sope/
+ssh REMOTE 'git clone ~/wkt_sope/latent_sope.bundle ~/wkt_sope/main'
+ssh REMOTE 'cd ~/wkt_sope/main && git checkout main'
+ssh REMOTE 'cd ~/wkt_sope/main && git submodule update --init'
+ssh REMOTE 'cd ~/wkt_sope/main && git worktree add ../rei Rei'
+ssh REMOTE 'cd ~/wkt_sope/main && git worktree add ../celina Celina'
+```
+
+Notes:
+
+- `git submodule update --init` is the safe default for this repo
+- avoid `--recursive` until the nested `third_party/sope` submodule layout is
+  cleaned up
+- the remote worktree layout should be created by Git, not by copied `.git`
+  files
+
+### 4.3 Repeated Sync Step
+
+After the remote bootstrap exists, sync the whole worktree family from the
+parent directory:
+
+```bash
+rsync -az --delete --info=progress2 \
+  --exclude='.git' \
+  --exclude='.venv/' \
+  --exclude='venv/' \
+  --exclude='__pycache__/' \
+  --exclude='.mypy_cache/' \
+  --exclude='.pytest_cache/' \
+  --exclude='.ruff_cache/' \
+  --exclude='.DS_Store' \
+  --exclude='*.pyc' \
+  --exclude='logs/' \
+  /home/kyle/repos/wkt_sope/ \
+  REMOTE:~/wkt_sope/
+```
+
+The important detail is `--exclude='.git'`, not `--exclude='.git/'`. The
+former excludes both Git directories and Git pointer files named `.git`.
+
+If [`rsync_to_carc.sh`](../rsync_to_carc.sh) is reused for this workflow, it
+should follow the same rule and exclude `.git` rather than `.git/`.
+
+## 5. Validation Priorities
 
 When diffusion behavior changes, prefer the smallest checks that still exercise
 the affected contract:

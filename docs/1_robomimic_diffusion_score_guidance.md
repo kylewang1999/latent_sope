@@ -1,4 +1,4 @@
-# Robomimic Diffusion Guidance, FiLM Backbone, And Visual Encoder Training
+# Robomimic Diffusion Guidance, Policy Interface, And Horizon Semantics
 
 Relevant code:
 
@@ -8,9 +8,11 @@ Relevant code:
 - [third_party/robomimic/robomimic/models/diffusion_policy_nets.py](../third_party/robomimic/robomimic/models/diffusion_policy_nets.py)
 - [third_party/robomimic/robomimic/models/obs_core.py](../third_party/robomimic/robomimic/models/obs_core.py)
 - [third_party/robomimic/robomimic/models/base_nets.py](../third_party/robomimic/robomimic/models/base_nets.py)
+- [third_party/robomimic/robomimic/utils/file_utils.py](../third_party/robomimic/robomimic/utils/file_utils.py)
 - [src/diffusion.py](../src/diffusion.py)
 - [src/sampling.py](../src/sampling.py)
 - [src/robomimic_interface/policy.py](../src/robomimic_interface/policy.py)
+- [src/robomimic_interface/dataset.py](../src/robomimic_interface/dataset.py)
 
 ## 1. Summary
 
@@ -22,6 +24,11 @@ $\log \pi(a \mid s)$ interface. In the current repository:
   epsilon-prediction parameterization
 - the local sampler expects diffusion-style policies exposing
   `grad_log_prob(state, action)`
+- the policy-score contract and action-score postprocessing surface are treated
+  as one explicit local interface
+- horizon alignment matters at two different boundaries: `observation_horizon`
+  sets the conditioning width, while `prediction_horizon` sets the action-window
+  length restored from checkpoint config
 - `FilmConditionedBackbone` is a thin adapter around robomimic's
   `ConditionalUnet1D`
 - the default robomimic visual encoder is trained jointly with the diffusion
@@ -114,6 +121,88 @@ chunk model remains internally consistent, but policy-side `predict_epsilon=Fals
 would require replacing the epsilon-based score conversion with the corresponding
 `predict-x0` form.
 
+### 3.3 Action-Score Postprocess Surface
+
+[`guided_sample_step`](../src/sampling.py) treats the policy-score API and
+action-score postprocessing as one explicit local contract instead of encoding
+those choices through older upstream-derived switches.
+
+The public FiLM sampling API under
+[`FilmGaussianDiffusion.conditional_sample`](../src/diffusion.py) now uses:
+
+- `action_score_scale`
+- `action_score_postprocess`
+- `action_neg_score_weight`
+- `clamp_linf`
+
+Inside [`prepare_guidance`](../src/sampling.py), the sampler retrieves raw
+action-only scores on chunk tensors and then applies one of three local
+heuristics independently at each chunk timestep:
+
+- `"none"`: keep the raw score unchanged
+- `"l2"`: L2-normalize each per-timestep action-score vector
+- `"clamp"`: clip both target and behavior scores to `[-clamp_linf, clamp_linf]`
+
+The final local guide is
+
+$$\begin{align}
+\text{guide}
+=
+\text{postprocess}(g_{\pi})
+-
+\text{action\_neg\_score\_weight}\,\text{postprocess}(g_{\beta}),
+\end{align}$$
+
+when negative guidance is enabled, and just the postprocessed target score
+otherwise.
+
+### 3.4 Horizon Alignment And Checkpoint Semantics
+
+The local FiLM chunk diffuser conditions on `states_from`, which contains
+exactly `frame_stack` prefix states from the dataset contract in
+[`RolloutChunkDataset`](../src/robomimic_interface/dataset.py). The robomimic
+guidance adapter interprets action-score queries using its own
+`observation_horizon`. Allowing those horizons to differ would silently mix two
+incompatible sequence contracts.
+
+`SopeDiffuser` therefore requires:
+
+- `cfg.frame_stack == policy.observation_horizon`
+
+It is also important not to overstate what is "baked into" a robomimic
+diffusion policy checkpoint.
+
+Robomimic restores `prediction_horizon` from the serialized checkpoint config,
+not from weight shapes alone. In the standard load path,
+[`config_from_checkpoint(...)`](../third_party/robomimic/robomimic/utils/file_utils.py)
+parses `ckpt_dict["config"]`, and
+[`policy_from_checkpoint(...)`](../third_party/robomimic/robomimic/utils/file_utils.py)
+rebuilds the policy from that config before deserializing the saved weights.
+
+This distinction matters because:
+
+- `observation_horizon` controls the conditioning width
+  `$[B, T_o, D_{\text{obs}}] \rightarrow [B, T_o D_{\text{obs}}]$`
+- `prediction_horizon` controls the denoised action-sequence shape
+  `$[B, T_p, D_a]$`
+- the robomimic `ConditionalUnet1D` is convolutional over the time axis and
+  preserves the sample horizon it is given, so raw weight tensors alone **do not**
+  reliably identify `$T_p$`
+
+### 3.5 Scheduler Device Handling
+
+`DiffusionPolicy.grad_log_prob(...)` converts robomimic's predicted epsilon
+into a score by reading `noise_scheduler.alphas_cumprod` at the configured
+guidance timestep.
+
+That scheduler tensor is not part of the robomimic module tree, so moving the
+policy network to CUDA does not guarantee that `alphas_cumprod` moves with it.
+The adapter therefore materializes `alphas_cumprod` on the current action or
+denoiser device before gathering the per-query $\bar{\alpha}_t$ values.
+
+Without this device move, guided runs can fail on CUDA with a device-mismatch
+error when indexing a CPU scheduler tensor using a CUDA timestep tensor.
+
 ## 4. Why The Backbone Is FiLM-Style
 
 Robomimic's `ConditionalUnet1D` does not instantiate a class literally called
@@ -177,4 +266,4 @@ The smallest meaningful checks for this part of the stack are:
 2. verify that `grad_log_prob(...)` returns the expected action-gradient shape
 3. run one guided and one unguided chunk sample and confirm only action
    coordinates receive explicit score edits
-4. rerun `python -m py_compile src/diffusion.py src/sampling.py src/robomimic_interface/policy.py`
+4. rerun `python -m py_compile src/diffusion.py src/sampling.py src/robomimic_interface/policy.py src/robomimic_interface/dataset.py`

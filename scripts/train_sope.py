@@ -1,4 +1,38 @@
 #!/usr/bin/env python3
+"""Train SOPE models from saved robomimic latent trajectories.
+
+This entrypoint trains the chunk diffusion model and reward predictor from a
+directory of saved latent-trajectory files. The default no-arg path uses
+`chunk_size=14` so the bundled robomimic defaults `To=2` and `Tp=16` satisfy
+`Tp = To + H`, enabling exact whole-action-chunk scoring by default.
+
+Example commands:
+
+1. Train with the default postprocessed robomimic Lift MH visual-policy
+   latents under `data/robomimic/lift/mh/postprocessed_for_ope/both`:
+
+   ```bash
+   python3 scripts/train_sope.py
+   ```
+
+   The default data uses the one-step `feat_type="both"` observation features
+   for the visual diffusion policy
+   `data/policy/rmimic-lift-mh-image-v15-diffusion_260123`, with width
+   `147 = 19 low-dim + 128 visual` as described in
+   `docs/12_robomimic_visual_policy_embeddings.md`.
+
+2. Train in the legacy state-only setting from the postprocessed robomimic
+   low-dimensional demos under
+   `data/robomimic/lift/ph/postprocessed_for_ope/low_dim`:
+
+   ```bash
+   python3 scripts/train_sope.py \
+       --data data/robomimic/lift/ph/postprocessed_for_ope/low_dim
+   ```
+
+   This replaces the older state-only training path that read from
+   `data/rollout/rmimic-lift-ph-lowdim_diffusion_260130`.
+"""
 
 from __future__ import annotations
 
@@ -15,33 +49,44 @@ if str(REPO_ROOT) not in sys.path:
 from src.utils import PATHS, make_log_dir
 
 
+DEFAULT_MATCHED_OBSERVATION_HORIZON = 2
+DEFAULT_MATCHED_PREDICTION_HORIZON = 16
+DEFAULT_CHUNK_SIZE = (
+    DEFAULT_MATCHED_PREDICTION_HORIZON - DEFAULT_MATCHED_OBSERVATION_HORIZON
+)
+
+
 def _resolve_default_checkpoint_dir() -> Path:
     return Path(make_log_dir("train_sope_film", verbose=False))
 
 
 def _resolve_default_data_path() -> Path:
-    rollout_root = (
-        PATHS.repo_root / "data" / "rollout" / "rmimic-lift-ph-lowdim_diffusion_260130"
-    )
-    h5_dir = rollout_root / "h5_files"
-    return (h5_dir if h5_dir.is_dir() else rollout_root).resolve()
+    return (
+        PATHS.repo_root
+        / "data"
+        / "robomimic"
+        / "lift"
+        / "mh"
+        / "postprocessed_for_ope"
+        / "both"
+    ).resolve()
 
 
-def _resolve_rollout_reference(path: Path) -> Path:
-    path = path.resolve()
+def _resolve_latent_reference(path: Path | str) -> Path:
+    path = Path(path).resolve()
     if path.is_file():
         return path
     if path.is_dir():
         candidates = sorted(path.rglob("*.h5")) + sorted(path.rglob("*.hdf5")) + sorted(path.rglob("*.npz"))
         if not candidates:
-            raise FileNotFoundError(f"No rollout files found under {path}.")
+            raise FileNotFoundError(f"No latent trajectory files found under {path}.")
         return candidates[0]
-    raise FileNotFoundError(f"Rollout path not found: {path}")
+    raise FileNotFoundError(f"Latent trajectory path not found: {path}")
 
 
-def _infer_rollout_shapes(path: Path) -> tuple[int, int, int]:
-    rollout_path = _resolve_rollout_reference(path)
-    with h5py.File(rollout_path, "r") as handle:
+def _infer_latent_shapes(path: Path | str) -> tuple[int, int, int]:
+    latent_path = _resolve_latent_reference(path)
+    with h5py.File(latent_path, "r") as handle:
         latents_shape = tuple(handle["latents"].shape)
         actions_shape = tuple(handle["actions"].shape)
         frame_stack = int(handle.attrs.get("frame_stack", latents_shape[1] if len(latents_shape) >= 3 else 1))
@@ -51,12 +96,13 @@ def _infer_rollout_shapes(path: Path) -> tuple[int, int, int]:
     return latent_dim, action_dim, frame_stack
 
 
-def _infer_eef_pos_slice(path: Path) -> tuple[int, int]:
-    rollout_path = _resolve_rollout_reference(path)
-    with h5py.File(rollout_path, "r") as handle:
+def _infer_eef_pos_slice(path: Path | str) -> tuple[int, int]:
+    latent_path = _resolve_latent_reference(path)
+    with h5py.File(latent_path, "r") as handle:
         if "obs" not in handle or "robot0_eef_pos" not in handle["obs"]:
             raise ValueError(
-                f"Rollout file {rollout_path} does not contain obs/robot0_eef_pos needed to infer the low-dim slice."
+                f"Latent trajectory file {latent_path} does not contain obs/robot0_eef_pos "
+                "needed to infer the low-dim slice."
             )
 
         offset = 0
@@ -67,12 +113,12 @@ def _infer_eef_pos_slice(path: Path) -> tuple[int, int]:
                 return offset, next_offset
             offset = next_offset
 
-    raise ValueError(f"Could not infer robot0_eef_pos slice from {rollout_path}.")
+    raise ValueError(f"Could not infer robot0_eef_pos slice from {latent_path}.")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train the canonical SOPE chunk diffusion model from saved rollout latents."
+        description="Train the canonical SOPE chunk diffusion model from saved latent trajectories."
     )
     parser.add_argument("--data", type=Path, default=_resolve_default_data_path())
     parser.add_argument("--checkpoint-dir", type=Path, default=None)
@@ -88,7 +134,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr-scheduler-min-lr", type=float, default=0.0)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--chunk-size", type=int, default=4)
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_CHUNK_SIZE,
+        help=(
+            "Future chunk horizon H. Defaults to 14 so the bundled robomimic "
+            "defaults To=2 and Tp=16 satisfy Tp = To + H."
+        ),
+    )
     parser.add_argument(
         "--dim-mults",
         type=int,
@@ -133,7 +187,7 @@ def main() -> None:
     data_path = args.data.resolve()
     checkpoint_dir = args.checkpoint_dir.resolve() if args.checkpoint_dir is not None else _resolve_default_checkpoint_dir()
 
-    latent_dim, action_dim, frame_stack = _infer_rollout_shapes(data_path)
+    latent_dim, action_dim, frame_stack = _infer_latent_shapes(data_path)
 
     cfg_dataset = RolloutChunkDatasetConfig(
         chunk_size=args.chunk_size,

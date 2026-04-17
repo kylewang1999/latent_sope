@@ -1,4 +1,31 @@
 #!/usr/bin/env python3
+"""Compute a guided checkpoint-backed SOPE OPE estimate from rollout initial states.
+
+This script loads a trained SOPE diffuser and reward predictor, selects rollout
+trajectories from a saved corpus, and estimates a guided OPE value using
+checkpointed robomimic behavior and target policies.
+
+Example commands:
+
+1. Run with defaults, which reads from
+   `logs/train_sope_film_0406_102649`, uses that run's latest SOPE
+   checkpoints, evaluates the held-out split, and prints a text report:
+
+   ```bash
+   python3 scripts/test_ope_guided.py
+   ```
+
+2. Evaluate a specific run on all trajectories and emit JSON:
+
+   ```bash
+   python3 scripts/test_ope_guided.py \
+       --run-dir logs/train_sope_film_0406_102649 \
+       --data data/rollout/rmimic-lift-ph-lowdim_diffusion_260130 \
+       --split all \
+       --max-trajectories 64 \
+       --json
+   ```
+"""
 
 from __future__ import annotations
 

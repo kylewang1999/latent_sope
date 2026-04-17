@@ -15,6 +15,7 @@ This file is a reusable template for research-oriented codebases. It keeps the s
 - For any non-trivial change to training, inference, evaluation, data processing, or model architecture code, create a short companion note in `docs/`.
 - The note should link directly to the relevant code, summarize the behavior before and after the change, and record any important assumptions, equations, ablations, or implementation caveats.
 - Prefer small, focused documents over broad narrative writeups. One change or subsystem per file is usually the right granularity.
+- When creating a Python file that is intended to be executed as a top-level script, include a concrete example command near the top of the file, typically in the module docstring, showing how to run it with its CLI arguments. Follow the style used in `src/robomimic_interface/post_process_robomimic_h5.py`.
 - If the repository uses numbered docs, keep the numbering monotonic, for example `1_overview.md`, `2_training.md`, `3_sampling.md`.
 - For `.md` files in `docs/`, number second- and third-level headings consistently, for example `## 1. Section` and `### 1.1 Subsection`.
 - If a change affects experimental behavior, document what should be re-run to validate it.
