@@ -72,7 +72,7 @@ def get_repo_root() -> Path:
 
 
 def make_log_dir(description: str = "", verbose: bool = True) -> str:
-    suffix = f"{description}_" if description else ""
+    suffix = f"{description}-" if description else ""
     log_dir = PATHS.logs_dir / f"{suffix}{time.strftime('%m%d_%H%M%S')}"
     log_dir.mkdir(parents=True, exist_ok=True)
     if verbose:

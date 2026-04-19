@@ -45,10 +45,11 @@ and OPE estimates can be interpreted together.
 
 Use these notes as the current owners of each topic:
 
-- [docs/1_robomimic_diffusion_score_guidance.md](./1_robomimic_diffusion_score_guidance.md)
+- [docs/1_robomimic_policy_and_guidance.md](./1_robomimic_policy_and_guidance.md)
   for robomimic guidance, FiLM conditioning, parameterization caveats,
-  visual-backbone behavior, the local policy-score surface, and horizon /
-  checkpoint semantics for diffusion-policy guidance
+  visual-policy observation embeddings, training-time evaluation semantics, the
+  local policy-score surface, and horizon / checkpoint semantics for
+  diffusion-policy guidance
 - [docs/2_reward_predictor.md](./2_reward_predictor.md) for reward-model
   semantics
 - [docs/3_training_pipeline.md](./3_training_pipeline.md) for training and

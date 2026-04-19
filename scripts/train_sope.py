@@ -19,7 +19,6 @@ Example commands:
    for the visual diffusion policy
    `data/policy/rmimic-lift-mh-image-v15-diffusion_260123`, with width
    `147 = 19 low-dim + 128 visual` as described in
-   `docs/12_robomimic_visual_policy_embeddings.md`.
 
 2. Train in the legacy state-only setting from the postprocessed robomimic
    low-dimensional demos under
@@ -31,12 +30,15 @@ Example commands:
    ```
 
    This replaces the older state-only training path that read from
-   `data/rollout/rmimic-lift-ph-lowdim_diffusion_260130`.
+   `data/rollout/rmimic-lift-ph-lowdim_diffusion_260130`. With
+   `--checkpoint-dir` omitted, the default log-directory prefix is
+   `train-sope-feat:lowdim`.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -54,10 +56,71 @@ DEFAULT_MATCHED_PREDICTION_HORIZON = 16
 DEFAULT_CHUNK_SIZE = (
     DEFAULT_MATCHED_PREDICTION_HORIZON - DEFAULT_MATCHED_OBSERVATION_HORIZON
 )
+CHECKPOINT_FEAT_LABEL_ALIASES = {
+    "lowdim": "lowdim",
+    "low_dim": "lowdim",
+    "low_dim_concat": "lowdim",
+    "image": "image",
+    "image_embedding": "image",
+    "both": "both",
+}
 
 
-def _resolve_default_checkpoint_dir() -> Path:
-    return Path(make_log_dir("train_sope_film", verbose=False))
+def _normalize_checkpoint_feat_label(feat_type: str | None) -> str | None:
+    if feat_type is None:
+        return None
+    feat_type_token = str(feat_type).strip().lower()
+    return CHECKPOINT_FEAT_LABEL_ALIASES.get(feat_type_token)
+
+
+def _infer_checkpoint_feat_label_from_metadata(path: Path | str) -> str | None:
+    try:
+        latent_path = _resolve_latent_reference(path)
+    except FileNotFoundError:
+        return None
+
+    if latent_path.suffix.lower() not in {".h5", ".hdf5"}:
+        return None
+
+    try:
+        with h5py.File(latent_path, "r") as handle:
+            feat_type = handle.attrs.get("feat_type")
+    except OSError:
+        return None
+
+    if isinstance(feat_type, bytes):
+        feat_type = feat_type.decode("utf-8")
+    return _normalize_checkpoint_feat_label(feat_type)
+
+
+def _infer_checkpoint_feat_label_from_path(path: Path | str) -> str | None:
+    candidate_path = Path(path).expanduser()
+    for part in reversed(candidate_path.parts):
+        best_label = None
+        best_start = -1
+        lower_part = part.lower()
+        for alias, label in CHECKPOINT_FEAT_LABEL_ALIASES.items():
+            pattern = rf"(?:^|[^a-z0-9])({re.escape(alias)})(?=$|[^a-z0-9])"
+            for match in re.finditer(pattern, lower_part):
+                if match.start(1) >= best_start:
+                    best_label = label
+                    best_start = match.start(1)
+        if best_label is not None:
+            return best_label
+    return None
+
+
+def _resolve_default_checkpoint_description(data_path: Path | str) -> str:
+    feat_label = _infer_checkpoint_feat_label_from_metadata(data_path)
+    if feat_label is None:
+        feat_label = _infer_checkpoint_feat_label_from_path(data_path)
+    if feat_label is None:
+        return "train-sope"
+    return f"train-sope-feat:{feat_label}"
+
+
+def _resolve_default_checkpoint_dir(data_path: Path | str) -> Path:
+    return Path(make_log_dir(_resolve_default_checkpoint_description(data_path), verbose=False))
 
 
 def _resolve_default_data_path() -> Path:
@@ -121,7 +184,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Train the canonical SOPE chunk diffusion model from saved latent trajectories."
     )
     parser.add_argument("--data", type=Path, default=_resolve_default_data_path())
-    parser.add_argument("--checkpoint-dir", type=Path, default=None)
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Checkpoint directory. Defaults to a timestamped "
+            "logs/train-sope-feat:<feature-space>_* path inferred from --data."
+        ),
+    )
     parser.add_argument("--reward-epochs", type=int, default=100)
     parser.add_argument("--reward-batch-size", type=int, default=1024)
     parser.add_argument("--reward-lr", type=float, default=1e-3)
@@ -185,7 +256,11 @@ def main() -> None:
     )
 
     data_path = args.data.resolve()
-    checkpoint_dir = args.checkpoint_dir.resolve() if args.checkpoint_dir is not None else _resolve_default_checkpoint_dir()
+    checkpoint_dir = (
+        args.checkpoint_dir.resolve()
+        if args.checkpoint_dir is not None
+        else _resolve_default_checkpoint_dir(data_path)
+    )
 
     latent_dim, action_dim, frame_stack = _infer_latent_shapes(data_path)
 

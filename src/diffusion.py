@@ -458,6 +458,7 @@ class FilmGaussianDiffusion(GaussianDiffusion):
 
     def forward(self, cond: Optional[torch.Tensor], *args: Any, **kwargs: Any) -> Any:
         """Preserve the base module contract by routing calls to conditional sampling."""
+        # FIXME: Might no longer be compatible. Is this actually used in smaple() and generate_full_trajectory()?
         return super().forward(cond, *args, **kwargs)
 
 @dataclass(frozen=True)

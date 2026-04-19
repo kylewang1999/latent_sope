@@ -2,7 +2,7 @@
 
 This note summarizes what the `rei/` worktree appears to implement, relative to
 the two current goals described in
-[`docs/1_robomimic_diffusion_score_guidance.md`](../1_robomimic_diffusion_score_guidance.md):
+[`docs/1_robomimic_policy_and_guidance.md`](../1_robomimic_policy_and_guidance.md):
 
 1. implement guided diffusion where the target policy is a robomimic diffusion policy
 2. estimate target-policy value by generating synthetic "rollouts" with SOPE and scoring them

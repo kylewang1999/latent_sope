@@ -209,10 +209,11 @@ Training-time evaluation is orchestrated through
 
 - training loss metrics
 - epoch summaries
-- held-out unguided metrics such as loss and RMSE
-- held-out diagnostics
-- guided metrics when a guidance policy is attached, otherwise placeholder
-  guided namespaces so downstream dashboards keep a stable schema
+- held-out chunk-evaluation metrics such as loss and RMSE under `eval_metrics/*`
+- held-out chunk diagnostics under `eval_diagnostics/*`
+- no guided training-time evaluation metrics; guided sampling remains a
+  checkpoint-backed offline evaluation handled by
+  [`scripts/test_ope_guided.py`](../scripts/test_ope_guided.py)
 
 When `wandb` is enabled, the train/eval split and evaluation/save cadence are
 included in the logged config metadata.
