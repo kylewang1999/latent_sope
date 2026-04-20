@@ -22,8 +22,12 @@ For each target policy, it now:
    feature space
 5. compares policy ranking and rollout accuracy across all target policies
 
-The default report is written next to the SOPE diffuser checkpoint as
-`*_ope_guided_multipolicy_report.json`.
+The default report is written under `<run_dir>/eval_ope/` as
+`*_ope_guided_multipolicy_report_<mmdd_mmss>.json`.
+
+`evaluate_guided_multipolicy_ope(...)` rewrites that JSON after each completed
+target-policy evaluation, so an interrupted run still preserves the finished
+prefix of `policies`.
 
 The default shared rollout horizon is `80` steps. Both guided SOPE trajectories
 and true robomimic simulator rollouts use that same configured horizon unless

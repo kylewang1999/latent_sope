@@ -11,10 +11,13 @@ Example commands:
 
 1. Run with defaults, which evaluates all `model_epoch*.pth` checkpoints under
    `data/policy/rmimic-lift-mh-image-v15-diffusion_260123/models` against the
-   latest SOPE checkpoints in `logs/train-sope-feat:both_0417_163242`:
+   latest SOPE checkpoints in `logs/train-sope-feat:both_0417_163242` and
+   writes the timestamped JSON report under
+   `logs/train-sope-feat:both_0417_163242/eval_ope/`:
 
    ```bash
-   python scripts/test_ope_guided_multipolicy.py
+   python scripts/test_ope_guided_multipolicy.py \
+        --max-trajectories 10
    ```
 
 2. Smoke-test on a small slice and emit JSON:
@@ -33,6 +36,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -47,11 +51,15 @@ if os.environ.get("MUJOCO_GL", "").lower() == "osmesa":
     os.environ.setdefault("MUJOCO_PY_FORCE_CPU", "1")
 
 
-DEFAULT_ROLLOUT_HORIZON = 80
+DEFAULT_ROLLOUT_HORIZON = 200
 
 
 def _default_run_dir() -> Path:
     return (REPO_ROOT / "logs" / "train-sope-feat:both_0417_163242").resolve()
+
+
+def _default_report_dir(run_dir: Path) -> Path:
+    return run_dir.resolve() / "eval_ope"
 
 
 def _default_behavior_policy_checkpoint() -> Path:
@@ -74,9 +82,13 @@ def _default_target_policy_dir() -> Path:
     ).resolve()
 
 
-def _report_path(diffusion_checkpoint: Path) -> Path:
+def _report_path(*, run_dir: Path, diffusion_checkpoint: Path) -> Path:
     diffusion_checkpoint = diffusion_checkpoint.resolve()
-    return diffusion_checkpoint.parent / f"{diffusion_checkpoint.stem}_ope_guided_multipolicy_report.json"
+    timestamp = datetime.now().strftime("%m%d_%M%S")
+    return (
+        _default_report_dir(run_dir)
+        / f"{diffusion_checkpoint.stem}_ope_guided_multipolicy_report_{timestamp}.json"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-trajectories",
         type=int,
-        default=None,
+        default=10,
         help=(
             "Optional cap on the number of selected rollout trajectories to evaluate. "
             "When omitted or set to None, the script evaluates every trajectory in the requested split."
@@ -212,7 +224,7 @@ def main() -> None:
         if args.reward_checkpoint is not None
         else (run_dir / "sope_reward_predictor_latest.pt").resolve()
     )
-    report_path = _report_path(diffusion_checkpoint)
+    report_path = _report_path(run_dir=run_dir, diffusion_checkpoint=diffusion_checkpoint)
     guidance_config = GuidanceConfig(
         action_score_scale=float(args.action_score_scale),
         use_adaptive=bool(args.use_adaptive),
@@ -239,9 +251,9 @@ def main() -> None:
         guidance_config=guidance_config,
         device=args.device,
         run_dir=run_dir,
+        json_report=report_path,
     )
     payload = serialize_report(report, json_report=report_path)
-    report_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

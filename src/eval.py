@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, fields, is_dataclass
 import gc
+import json
 from pathlib import Path
 import re
 import shutil
@@ -28,7 +29,8 @@ from src.utils import resolve_device
 
 NP_FLOAT = np.float32
 DEFAULT_GUIDED_SUCCESS_HEIGHT_THRESHOLD = 0.84
-DEFAULT_GUIDED_SUCCESS_OBJECT_Z_INDEX = 2
+DEFAULT_GUIDED_SUCCESS_OBJECT_Z_INDEX: Optional[int] = None
+_LIFT_OBJECT_Z_WITHIN_OBJECT = 2
 _EPOCH_PATTERN = re.compile(r"model_epoch_(\d+)", re.IGNORECASE)
 
 
@@ -219,6 +221,21 @@ def serialize_report(
         raise TypeError(f"Expected report payload to serialize to a dict, got {type(payload)}.")
     if json_report is not None:
         payload["json_report"] = str(Path(json_report).resolve())
+    return payload
+
+
+def write_report_json(
+    report: Any,
+    *,
+    json_report: Path,
+) -> dict[str, Any]:
+    """Serialize a report and atomically replace its JSON file on disk."""
+    resolved_json_report = Path(json_report).expanduser().resolve()
+    payload = serialize_report(report, json_report=resolved_json_report)
+    resolved_json_report.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = resolved_json_report.with_name(f".{resolved_json_report.name}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(resolved_json_report)
     return payload
 
 
@@ -930,6 +947,18 @@ def _as_numpy_array(value: Any, *, dtype: np.dtype = np.float32) -> np.ndarray:
     return np.asarray(value, dtype=dtype)
 
 
+def _as_torch_tensor(
+    value: Any,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: Optional[torch.device | str] = None,
+) -> torch.Tensor:
+    if torch.is_tensor(value):
+        value_t = value.detach()
+        return value_t.to(device=device if device is not None else value_t.device, dtype=dtype)
+    return torch.as_tensor(value, dtype=dtype, device=device)
+
+
 def _build_initial_states(
     rollout_paths: list[Path],
     *,
@@ -969,6 +998,31 @@ def _discounted_returns(
     assert rewards.ndim == 2, f"Expected rewards to have shape [B, T], got {rewards.shape}."
     discounts = np.power(np.float32(gamma), np.arange(rewards.shape[1], dtype=np.float32))
     return np.sum(rewards * discounts[None, :], axis=1, dtype=np.float64).astype(np.float32)
+
+
+def _discounted_returns_torch(
+    rewards: Any,
+    *,
+    gamma: float,
+) -> torch.Tensor:
+    rewards_t = _as_torch_tensor(rewards, dtype=torch.float32)
+    if rewards_t.ndim == 1:
+        rewards_t = rewards_t.unsqueeze(0)
+    assert rewards_t.ndim == 2, f"Expected rewards to have shape [B, T], got {tuple(rewards_t.shape)}."
+    discounts = torch.pow(
+        torch.full(
+            (rewards_t.shape[1],),
+            gamma,
+            dtype=rewards_t.dtype,
+            device=rewards_t.device,
+        ),
+        torch.arange(
+            rewards_t.shape[1],
+            dtype=rewards_t.dtype,
+            device=rewards_t.device,
+        ),
+    )
+    return torch.sum(rewards_t * discounts.unsqueeze(0), dim=1, dtype=torch.float64).to(dtype=torch.float32)
 
 
 def _load_saved_rollout_targets(
@@ -1057,11 +1111,19 @@ def _load_saved_rollout_targets(
 
 
 def _reward_predictions_to_numpy(predictions: Any) -> np.ndarray:
-    rewards = _as_numpy_array(predictions, dtype=np.float32)
+    return _as_numpy_array(_reward_predictions_to_tensor(predictions), dtype=np.float32)
+
+
+def _reward_predictions_to_tensor(
+    predictions: Any,
+    *,
+    device: Optional[torch.device | str] = None,
+) -> torch.Tensor:
+    rewards = _as_torch_tensor(predictions, dtype=torch.float32, device=device)
     if rewards.ndim == 3 and rewards.shape[-1] == 1:
         rewards = rewards.squeeze(-1)
     if rewards.ndim != 2:
-        raise ValueError(f"Expected reward predictions to have shape [B, T], got {rewards.shape}.")
+        raise ValueError(f"Expected reward predictions to have shape [B, T], got {tuple(rewards.shape)}.")
     return rewards
 
 
@@ -1076,6 +1138,29 @@ def _transition_error_totals(
     return (
         float(np.square(pred_transition - true_transition).sum(dtype=np.float64)),
         int(pred_transition.size),
+    )
+
+
+def _transition_error_totals_torch(
+    pred_states: Any,
+    pred_actions: Any,
+    true_states: Any,
+    true_actions: Any,
+) -> tuple[float, int]:
+    pred_states_t = _as_torch_tensor(pred_states, dtype=torch.float32)
+    pred_actions_t = _as_torch_tensor(pred_actions, dtype=torch.float32, device=pred_states_t.device)
+    true_states_t = _as_torch_tensor(true_states, dtype=torch.float32, device=pred_states_t.device)
+    true_actions_t = _as_torch_tensor(true_actions, dtype=torch.float32, device=pred_states_t.device)
+    pred_transition = torch.cat([pred_states_t, pred_actions_t], dim=-1)
+    true_transition = torch.cat([true_states_t, true_actions_t], dim=-1)
+    if pred_transition.shape != true_transition.shape:
+        raise ValueError(
+            "Transition tensors must share the same shape; "
+            f"got {tuple(pred_transition.shape)} vs {tuple(true_transition.shape)}."
+        )
+    return (
+        float(torch.square(pred_transition - true_transition).sum(dtype=torch.float64).item()),
+        int(pred_transition.numel()),
     )
 
 
@@ -1301,25 +1386,24 @@ def evaluate_saved_rollout_ope(
                 guided=guided,
                 **sampling_kwargs,
             )
-            batch_states_np = _as_numpy_array(batch_states, dtype=np.float32)
-            batch_actions_np = _as_numpy_array(batch_actions, dtype=np.float32)
-            sq_error, num_elements = _transition_error_totals(
-                batch_states_np,
-                batch_actions_np,
+            sq_error, num_elements = _transition_error_totals_torch(
+                batch_states,
+                batch_actions,
                 targets.states[start:end],
                 targets.actions[start:end],
             )
             total_squared_error += sq_error
             total_transition_elements += num_elements
 
-            batch_reward_preds_np = _reward_predictions_to_numpy(
-                reward_predictor.predict(batch_states_np, batch_actions_np)
+            batch_reward_preds_t = _reward_predictions_to_tensor(
+                reward_predictor.predict(batch_states, batch_actions),
+                device=batch_states.device,
             )
-            batch_returns = _discounted_returns(
-                batch_reward_preds_np,
+            batch_returns = _discounted_returns_torch(
+                batch_reward_preds_t,
                 gamma=float(diffuser.cfg.ope_gamma),
             )
-            total_weighted_estimate += float(batch_returns.sum(dtype=np.float64))
+            total_weighted_estimate += float(batch_returns.sum(dtype=torch.float64).item())
             total_count += end - start
             batch_iterator.set_postfix(
                 ope_return=f"{(total_weighted_estimate / max(total_count, 1)):.4f}",
@@ -1600,7 +1684,7 @@ def _rollout_from_initial_state(
 def _guided_success_mask(
     guided_states: np.ndarray,
     *,
-    object_z_index: int = DEFAULT_GUIDED_SUCCESS_OBJECT_Z_INDEX,
+    object_z_index: int,
     height_threshold: float = DEFAULT_GUIDED_SUCCESS_HEIGHT_THRESHOLD,
 ) -> np.ndarray:
     guided_states = np.asarray(guided_states, dtype=np.float32)
@@ -1611,6 +1695,81 @@ def _guided_success_mask(
             f"state prefix at index {object_z_index}, but state_dim={guided_states.shape[-1]}."
         )
     return np.max(guided_states[:, :, object_z_index], axis=1) > float(height_threshold)
+
+
+def _obs_encoder_feature_width(
+    obs_encoder: Any,
+    *,
+    key: str,
+) -> tuple[int, bool]:
+    feat_shape = tuple(obs_encoder.obs_shapes[key])
+    randomizers = obs_encoder.obs_randomizers[key]
+    for randomizer in randomizers:
+        if randomizer is not None:
+            feat_shape = tuple(randomizer.output_shape_in(feat_shape))
+    obs_nets = obs_encoder.obs_nets
+    obs_net = obs_nets[key] if hasattr(obs_nets, "__getitem__") else getattr(obs_nets, key)
+    if obs_net is not None:
+        feat_shape = tuple(obs_net.output_shape(feat_shape))
+    for randomizer in randomizers:
+        if randomizer is not None:
+            feat_shape = tuple(randomizer.output_shape_out(feat_shape))
+    return int(np.prod(feat_shape)), obs_net is None
+
+
+def _resolve_guided_success_object_z_index(
+    feature_hook: Any,
+) -> int:
+    feature_type = getattr(feature_hook, "feature_type", None)
+    if feature_type == "low_dim_concat":
+        obs_shapes = feature_hook._get_obs_shapes()
+        offset = 0
+        for key in feature_hook.low_dim_keys:
+            width = int(np.prod(obs_shapes[key]))
+            if key == "object":
+                if width <= _LIFT_OBJECT_Z_WITHIN_OBJECT:
+                    raise ValueError(
+                        "Lift guided-success heuristic requires an object observation with at least "
+                        f"{_LIFT_OBJECT_Z_WITHIN_OBJECT + 1} coordinates, got width {width}."
+                    )
+                return offset + _LIFT_OBJECT_Z_WITHIN_OBJECT
+            offset += width
+        raise ValueError(
+            "Lift guided-success heuristic requires the raw 'object' key to be present in the "
+            f"low-dimensional feature order, got keys {feature_hook.low_dim_keys}."
+        )
+
+    if feature_type == "both":
+        obs_encoder = getattr(feature_hook, "_obs_encoder", None)
+        if obs_encoder is None or not hasattr(obs_encoder, "obs_shapes"):
+            raise RuntimeError(
+                "Could not resolve the policy observation encoder needed to infer the guided-success state index."
+            )
+        offset = 0
+        for key in obs_encoder.obs_shapes:
+            width, preserves_raw_coordinates = _obs_encoder_feature_width(obs_encoder, key=key)
+            if key == "object":
+                if not preserves_raw_coordinates:
+                    raise ValueError(
+                        "Lift guided-success heuristic requires the raw 'object' observation to remain directly "
+                        "addressable in feat_type='both', but the policy observation encoder transforms it."
+                    )
+                if width <= _LIFT_OBJECT_Z_WITHIN_OBJECT:
+                    raise ValueError(
+                        "Lift guided-success heuristic requires an object observation with at least "
+                        f"{_LIFT_OBJECT_Z_WITHIN_OBJECT + 1} coordinates, got width {width}."
+                    )
+                return offset + _LIFT_OBJECT_Z_WITHIN_OBJECT
+            offset += width
+        raise ValueError(
+            "Lift guided-success heuristic requires the raw 'object' key to be present in the "
+            f"obs-encoder feature order, got keys {list(obs_encoder.obs_shapes.keys())}."
+        )
+
+    raise ValueError(
+        "Lift guided-success heuristic is only defined when the feature space preserves raw object coordinates. "
+        f"Unsupported feature_type={feature_type!r}."
+    )
 
 
 def _parse_policy_epoch(path: Path) -> int:
@@ -1648,6 +1807,86 @@ def _resolve_target_policy_paths(
     return resolved_paths
 
 
+def _build_guided_multipolicy_ope_report(
+    *,
+    run_dir: Path,
+    diffusion_checkpoint_path: Path,
+    reward_checkpoint_path: Path,
+    data_path: Path,
+    source_dataset_path: Path,
+    split: str,
+    training_seed: int,
+    train_fraction: float,
+    num_rollout_files: int,
+    rollout_batch_size: int,
+    max_trajectories: Optional[int],
+    target_policy_dir: Path,
+    max_target_policies: Optional[int],
+    configured_rollout_horizon: int,
+    rollout_horizon: int,
+    ope_gamma: float,
+    reward_transform: str,
+    device: str,
+    behavior_policy_checkpoint: Path,
+    rollout_env_dataset_path: Path,
+    rollout_env_wrapper_checkpoint: Path,
+    guidance_config: GuidanceConfig,
+    guided_success_state_index: int,
+    guided_success_height_threshold: float,
+    policy_reports: list[MultipolicyOPEPolicyReport],
+) -> MultipolicyOPEReport:
+    assert policy_reports, "Multipolicy OPE report requires at least one policy report."
+
+    pred_means = np.asarray(
+        [policy_report.mean_predicted_transformed_return for policy_report in policy_reports],
+        dtype=np.float64,
+    )
+    true_means = np.asarray(
+        [policy_report.mean_true_transformed_return for policy_report in policy_reports],
+        dtype=np.float64,
+    )
+    raw_true_means = np.asarray(
+        [policy_report.mean_true_raw_return for policy_report in policy_reports],
+        dtype=np.float64,
+    )
+
+    report = MultipolicyOPEReport(
+        run_dir=run_dir,
+        diffusion_checkpoint=diffusion_checkpoint_path,
+        reward_checkpoint=reward_checkpoint_path,
+        data=data_path,
+        source_dataset_path=source_dataset_path,
+        split=split,
+        training_seed=training_seed,
+        train_fraction=train_fraction,
+        num_rollout_files=num_rollout_files,
+        rollout_batch_size=int(rollout_batch_size),
+        max_trajectories=max_trajectories,
+        target_policy_dir=target_policy_dir,
+        max_target_policies=max_target_policies,
+        num_target_policies=len(policy_reports),
+        configured_rollout_horizon=int(configured_rollout_horizon),
+        rollout_horizon=int(rollout_horizon),
+        ope_gamma=ope_gamma,
+        reward_transform=reward_transform,
+        device=device,
+        guided=True,
+        behavior_policy_checkpoint=behavior_policy_checkpoint,
+        rollout_env_dataset_path=rollout_env_dataset_path,
+        rollout_env_wrapper_checkpoint=rollout_env_wrapper_checkpoint,
+        guidance_config=guidance_config,
+        guided_success_state_index=int(guided_success_state_index),
+        guided_success_height_threshold=float(guided_success_height_threshold),
+        spearman_correlation_transformed=_spearman(pred_means, true_means),
+        policy_value_rmse_transformed=_rmse(pred_means, true_means),
+        policies=list(policy_reports),
+    )
+    if reward_transform == "identity":
+        report.spearman_correlation_raw = _spearman(pred_means, raw_true_means)
+        report.policy_value_rmse_raw = _rmse(pred_means, raw_true_means)
+    return report
+
+
 def evaluate_guided_multipolicy_ope(
     *,
     diffusion_checkpoint_path: Path,
@@ -1663,10 +1902,11 @@ def evaluate_guided_multipolicy_ope(
     target_score_timestep: int = 1,
     behavior_score_timestep: int = 1,
     guidance_config: Optional[GuidanceConfig] = None,
-    guided_success_object_z_index: int = DEFAULT_GUIDED_SUCCESS_OBJECT_Z_INDEX,
+    guided_success_object_z_index: Optional[int] = DEFAULT_GUIDED_SUCCESS_OBJECT_Z_INDEX,
     guided_success_height_threshold: float = DEFAULT_GUIDED_SUCCESS_HEIGHT_THRESHOLD,
     device: Optional[str] = None,
     run_dir: Optional[Path] = None,
+    json_report: Optional[Path] = None,
 ) -> MultipolicyOPEReport:
     """Evaluate guided multipolicy OPE by comparing generated trajectories to online target rollouts."""
     from src.robomimic_interface.dataset import RolloutChunkDatasetConfig, resolve_reward_transform
@@ -1676,11 +1916,15 @@ def evaluate_guided_multipolicy_ope(
     diffusion_checkpoint_path = Path(diffusion_checkpoint_path).resolve()
     reward_checkpoint_path = Path(reward_checkpoint_path).resolve()
     resolved_run_dir = Path(run_dir).resolve() if run_dir is not None else diffusion_checkpoint_path.parent
+    resolved_json_report = (
+        Path(json_report).expanduser().resolve() if json_report is not None else None
+    )
+    resolved_target_policy_dir = Path(target_policy_dir).expanduser().resolve()
     active_guidance_config = guidance_config or GuidanceConfig()
     resolved_rollout_horizon = _resolve_rollout_eval_horizon(rollout_horizon)
 
     target_policy_paths = _resolve_target_policy_paths(
-        target_policy_dir,
+        resolved_target_policy_dir,
         max_target_policies=max_target_policies,
     )
     resolved_behavior_policy_checkpoint = Path(behavior_policy_checkpoint).expanduser().resolve()
@@ -1760,6 +2004,16 @@ def evaluate_guided_multipolicy_ope(
             "Behavior-policy feature width must match the SOPE diffusion state_dim for target-rollout "
             f"re-encoding. Got behavior_feature_dim={behavior_feature_dim} vs state_dim={diffuser.cfg.state_dim}."
         )
+    resolved_guided_success_object_z_index = (
+        _resolve_guided_success_object_z_index(behavior_feature_hook)
+        if guided_success_object_z_index is None
+        else int(guided_success_object_z_index)
+    )
+    if resolved_guided_success_object_z_index < 0:
+        raise ValueError(
+            "guided_success_object_z_index must be non-negative, got "
+            f"{resolved_guided_success_object_z_index}."
+        )
 
     ope_gamma = float(diffuser.cfg.ope_gamma)
     sampling_kwargs = active_guidance_config.to_sampling_kwargs()
@@ -1814,16 +2068,20 @@ def evaluate_guided_multipolicy_ope(
                     guided=True,
                     **sampling_kwargs,
                 )
+                batch_reward_preds_t = _reward_predictions_to_tensor(
+                    reward_predictor.predict(batch_states, batch_actions),
+                    device=batch_states.device,
+                )
                 batch_states_np = _as_numpy_array(batch_states, dtype=np.float32)
                 batch_actions_np = _as_numpy_array(batch_actions, dtype=np.float32)
-                batch_reward_preds_np = _reward_predictions_to_numpy(
-                    reward_predictor.predict(batch_states_np, batch_actions_np)
-                )
                 guided_states[start:end] = batch_states_np
                 guided_actions[start:end] = batch_actions_np
-                predicted_transformed_returns[start:end] = _discounted_returns(
-                    batch_reward_preds_np,
-                    gamma=ope_gamma,
+                predicted_transformed_returns[start:end] = _as_numpy_array(
+                    _discounted_returns_torch(
+                        batch_reward_preds_t,
+                        gamma=ope_gamma,
+                    ),
+                    dtype=np.float32,
                 )
 
         del diffuser
@@ -1910,7 +2168,7 @@ def evaluate_guided_multipolicy_ope(
             np.mean(
                 _guided_success_mask(
                     guided_states,
-                    object_z_index=guided_success_object_z_index,
+                    object_z_index=resolved_guided_success_object_z_index,
                     height_threshold=guided_success_height_threshold,
                 )
             )
@@ -1940,52 +2198,63 @@ def evaluate_guided_multipolicy_ope(
                 behavior_score_timestep=int(behavior_score_timestep),
             )
         )
+        if resolved_json_report is not None:
+            partial_report = _build_guided_multipolicy_ope_report(
+                run_dir=resolved_run_dir,
+                diffusion_checkpoint_path=diffusion_checkpoint_path,
+                reward_checkpoint_path=reward_checkpoint_path,
+                data_path=resolved_data_path,
+                source_dataset_path=source_dataset_path,
+                split=split,
+                training_seed=split_seed,
+                train_fraction=train_fraction,
+                num_rollout_files=len(selected_paths),
+                rollout_batch_size=rollout_batch_size,
+                max_trajectories=max_trajectories,
+                target_policy_dir=resolved_target_policy_dir,
+                max_target_policies=max_target_policies,
+                configured_rollout_horizon=rollout_horizon,
+                rollout_horizon=resolved_rollout_horizon,
+                ope_gamma=ope_gamma,
+                reward_transform=str(reward_dataset_cfg.reward_transform),
+                device=str(resolved_device),
+                behavior_policy_checkpoint=resolved_behavior_rollout_checkpoint,
+                rollout_env_dataset_path=rollout_env_dataset_path,
+                rollout_env_wrapper_checkpoint=rollout_env_wrapper_checkpoint,
+                guidance_config=active_guidance_config,
+                guided_success_state_index=resolved_guided_success_object_z_index,
+                guided_success_height_threshold=guided_success_height_threshold,
+                policy_reports=policy_reports,
+            )
+            # Replacing the same JSON file after each completed policy preserves finished work if
+            # a later target-policy rollout fails or the job is interrupted.
+            write_report_json(partial_report, json_report=resolved_json_report)
 
-    pred_means = np.asarray(
-        [policy_report.mean_predicted_transformed_return for policy_report in policy_reports],
-        dtype=np.float64,
-    )
-    true_means = np.asarray(
-        [policy_report.mean_true_transformed_return for policy_report in policy_reports],
-        dtype=np.float64,
-    )
-    raw_true_means = np.asarray(
-        [policy_report.mean_true_raw_return for policy_report in policy_reports],
-        dtype=np.float64,
-    )
-
-    report = MultipolicyOPEReport(
+    report = _build_guided_multipolicy_ope_report(
         run_dir=resolved_run_dir,
-        diffusion_checkpoint=diffusion_checkpoint_path,
-        reward_checkpoint=reward_checkpoint_path,
-        data=resolved_data_path,
+        diffusion_checkpoint_path=diffusion_checkpoint_path,
+        reward_checkpoint_path=reward_checkpoint_path,
+        data_path=resolved_data_path,
         source_dataset_path=source_dataset_path,
         split=split,
         training_seed=split_seed,
         train_fraction=train_fraction,
         num_rollout_files=len(selected_paths),
-        rollout_batch_size=int(rollout_batch_size),
+        rollout_batch_size=rollout_batch_size,
         max_trajectories=max_trajectories,
-        target_policy_dir=Path(target_policy_dir).expanduser().resolve(),
+        target_policy_dir=resolved_target_policy_dir,
         max_target_policies=max_target_policies,
-        num_target_policies=len(policy_reports),
-        configured_rollout_horizon=int(rollout_horizon),
-        rollout_horizon=int(resolved_rollout_horizon),
+        configured_rollout_horizon=rollout_horizon,
+        rollout_horizon=resolved_rollout_horizon,
         ope_gamma=ope_gamma,
         reward_transform=str(reward_dataset_cfg.reward_transform),
         device=str(resolved_device),
-        guided=True,
         behavior_policy_checkpoint=resolved_behavior_rollout_checkpoint,
         rollout_env_dataset_path=rollout_env_dataset_path,
         rollout_env_wrapper_checkpoint=rollout_env_wrapper_checkpoint,
         guidance_config=active_guidance_config,
-        guided_success_state_index=int(guided_success_object_z_index),
-        guided_success_height_threshold=float(guided_success_height_threshold),
-        spearman_correlation_transformed=_spearman(pred_means, true_means),
-        policy_value_rmse_transformed=_rmse(pred_means, true_means),
-        policies=policy_reports,
+        guided_success_state_index=resolved_guided_success_object_z_index,
+        guided_success_height_threshold=guided_success_height_threshold,
+        policy_reports=policy_reports,
     )
-    if reward_dataset_cfg.reward_transform == "identity":
-        report.spearman_correlation_raw = _spearman(pred_means, raw_true_means)
-        report.policy_value_rmse_raw = _rmse(pred_means, raw_true_means)
     return report

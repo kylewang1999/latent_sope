@@ -18,6 +18,7 @@ logs*/
 *datasets/
 wandb/
 tests/
+port_over/
 
 *.hdf5
 *.txt

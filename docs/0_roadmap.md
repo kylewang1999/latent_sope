@@ -61,6 +61,10 @@ Use these notes as the current owners of each topic:
 - [docs/6_guided_trajectory_sampling.md](./6_guided_trajectory_sampling.md)
   for the detailed action-guidance derivation, DDPM guidance math, and
   score-contract interpretation
+- [docs/10_rollout_horizon_and_success_metrics.md](./10_rollout_horizon_and_success_metrics.md)
+  for robomimic rollout-stop conditions, horizon defaults and overrides, and
+  the relationship between trajectory raw return and rollout success rate in
+  the current Lift multipolicy evaluation setup
 
 ## 4. Operational Notes
 
